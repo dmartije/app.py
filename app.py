@@ -137,15 +137,40 @@ def solve(samples):
     for j in jobs:
         model.Add(makespan >= j["end"]).OnlyEnforceIf(j["var"])
 
-    # Priority-aware objective:
-    # main = minimize total finish time
-    # secondary = make higher priority samples finish earlier
-    priority_penalty = sum(
-        j["end"] * j["priority"] * j["var"]
-        for j in jobs
-    )
+    # Strict priority objective:
+    # 1. Minimize Sublot finish time
+    # 2. Minimize Face finish time
+    # 3. Minimize Mine finish time
+    # 4. Minimize Lot Quality finish time
+    # 5. Minimize overall finish time
 
-    model.Minimize(makespan * 100000 + priority_penalty)
+    type_finish = {}
+
+    for sample_type in rules.keys():
+        if samples.get(sample_type, 0) > 0:
+            type_finish[sample_type] = model.NewIntVar(0, horizon, f"{sample_type}_finish")
+
+            for j in jobs:
+                if j["type"] == sample_type:
+                    model.Add(type_finish[sample_type] >= j["end"]).OnlyEnforceIf(j["var"])
+
+    objective_terms = []
+
+    if "Sublot" in type_finish:
+        objective_terms.append(type_finish["Sublot"] * 100000000)
+
+    if "Face" in type_finish:
+        objective_terms.append(type_finish["Face"] * 1000000)
+
+    if "Mine" in type_finish:
+        objective_terms.append(type_finish["Mine"] * 10000)
+
+    if "Lot Quality" in type_finish:
+        objective_terms.append(type_finish["Lot Quality"] * 100)
+
+    objective_terms.append(makespan)
+
+    model.Minimize(sum(objective_terms))
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit
