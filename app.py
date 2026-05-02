@@ -12,17 +12,26 @@ from ortools.sat.python import cp_model
 # ============================================================
 
 st.set_page_config(page_title="Sample Scheduler", layout="wide")
-st.title("Sample Preparation Optimizer (OR-Tools + Plate Gantt)")
+st.title("Sample Preparation Optimizer (Sorting + OR-Tools + Plate Gantt)")
 
 TOTAL_PLATES = 5
 TIME_UNIT = 5
 PLATES = [f"Plate {i}" for i in range(1, TOTAL_PLATES + 1)]
 
+# Reduction step rules
 rules = {
     "Sublot": {"priority": 1, "minutes": 30, "personnel": 4, "capacity": 1},
     "Face": {"priority": 2, "minutes": 5, "personnel": 1, "capacity": 10},
     "Mine": {"priority": 3, "minutes": 10, "personnel": 3, "capacity": 2},
     "Lot Quality": {"priority": 4, "minutes": 30, "personnel": 1, "capacity": 1},
+}
+
+# Sorting time before reduction can start
+sorting_minutes = {
+    "Face": 60,
+    "Mine": 30,
+    "Sublot": 35,
+    "Lot Quality": 30,
 }
 
 
@@ -32,7 +41,7 @@ rules = {
 
 st.sidebar.header("Input")
 
-start_time = st.sidebar.datetime_input(
+receipt_time = st.sidebar.datetime_input(
     "Date and Time Received",
     value=datetime(2026, 5, 2, 8, 0)
 )
@@ -60,12 +69,46 @@ time_limit = st.sidebar.slider(
 
 
 # ============================================================
+# HELPER: CALCULATE HORIZON
+# ============================================================
+
+def calculate_horizon(samples):
+    max_sort_units = max(
+        sorting_minutes[sample_type] // TIME_UNIT
+        for sample_type, qty in samples.items()
+        if qty > 0
+    ) if any(qty > 0 for qty in samples.values()) else 0
+
+    total_reduction_units = 0
+
+    for sample_type, qty in samples.items():
+        if qty <= 0:
+            continue
+
+        rule = rules[sample_type]
+
+        max_capacity = min(
+            personnel_total // rule["personnel"],
+            TOTAL_PLATES * rule["capacity"]
+        )
+
+        if max_capacity <= 0:
+            continue
+
+        cycles = math.ceil(qty / max_capacity)
+        duration_units = rule["minutes"] // TIME_UNIT
+        total_reduction_units += cycles * duration_units
+
+    return max(200, max_sort_units + total_reduction_units + 50)
+
+
+# ============================================================
 # SOLVER
 # ============================================================
 
 def solve(samples):
     model = cp_model.CpModel()
-    horizon = 200  # 200 units x 5 minutes = 1000 minutes maximum schedule window
+    horizon = calculate_horizon(samples)
 
     jobs = []
 
@@ -76,13 +119,19 @@ def solve(samples):
         rule = rules[sample_type]
         duration_units = rule["minutes"] // TIME_UNIT
 
+        # Reduction cannot start until sorting is finished
+        sorting_units = sorting_minutes[sample_type] // TIME_UNIT
+
         max_batch = min(
             qty,
             personnel_total // rule["personnel"],
             TOTAL_PLATES * rule["capacity"],
         )
 
-        for t in range(horizon):
+        if max_batch <= 0:
+            raise ValueError(f"Not enough personnel to process {sample_type}.")
+
+        for t in range(sorting_units, horizon):
             for q in range(1, max_batch + 1):
                 personnel_needed = q * rule["personnel"]
                 plates_needed = math.ceil(q / rule["capacity"])
@@ -101,7 +150,8 @@ def solve(samples):
                     "personnel": personnel_needed,
                     "plates": plates_needed,
                     "priority": rule["priority"],
-                    "duration_minutes": rule["minutes"]
+                    "duration_minutes": rule["minutes"],
+                    "sorting_minutes": sorting_minutes[sample_type],
                 })
 
     # Complete exact required sample quantity
@@ -137,13 +187,7 @@ def solve(samples):
     for j in jobs:
         model.Add(makespan >= j["end"]).OnlyEnforceIf(j["var"])
 
-    # Strict priority objective:
-    # 1. Minimize Sublot finish time
-    # 2. Minimize Face finish time
-    # 3. Minimize Mine finish time
-    # 4. Minimize Lot Quality finish time
-    # 5. Minimize overall finish time
-
+    # Strict priority objective
     type_finish = {}
 
     for sample_type in rules.keys():
@@ -191,16 +235,20 @@ def solve(samples):
 
     for j in jobs:
         if solver.Value(j["var"]) == 1:
-            start_dt = start_time + timedelta(minutes=j["start"] * TIME_UNIT)
-            finish_dt = start_time + timedelta(minutes=j["end"] * TIME_UNIT)
+            sorting_end = receipt_time + timedelta(minutes=j["sorting_minutes"])
+            reduction_start = receipt_time + timedelta(minutes=j["start"] * TIME_UNIT)
+            reduction_finish = receipt_time + timedelta(minutes=j["end"] * TIME_UNIT)
 
             result.append({
                 "Type": j["type"],
                 "Qty": j["qty"],
                 "Personnel": j["personnel"],
                 "PlatesNeeded": j["plates"],
-                "Start": start_dt,
-                "Finish": finish_dt,
+                "Receipt Time": receipt_time,
+                "Sorting Minutes": j["sorting_minutes"],
+                "Sorting End": sorting_end,
+                "Start": reduction_start,
+                "Finish": reduction_finish,
                 "Duration Minutes": j["duration_minutes"],
                 "Priority": j["priority"]
             })
@@ -213,7 +261,7 @@ def solve(samples):
 # ============================================================
 
 def assign_plates(jobs):
-    plate_free = {plate: start_time for plate in PLATES}
+    plate_free = {plate: receipt_time for plate in PLATES}
     output = []
 
     for job in sorted(jobs, key=lambda x: (x["Start"], x["Priority"])):
@@ -258,7 +306,6 @@ if st.button("Generate Optimized Schedule"):
             st.info(f"Solver Status: {status}")
             st.write(status_message)
 
-            # Add cycle number per sample type
             df = df.sort_values(["Type", "Start"])
             df["Cycle No."] = df.groupby("Type").cumcount() + 1
             df = df.sort_values(["Start", "Priority", "Type"])
@@ -274,6 +321,9 @@ if st.button("Generate Optimized Schedule"):
                         "PlatesNeeded",
                         "Plate",
                         "Cycle No.",
+                        "Receipt Time",
+                        "Sorting Minutes",
+                        "Sorting End",
                         "Start",
                         "Finish",
                         "Duration Minutes",
@@ -285,30 +335,24 @@ if st.button("Generate Optimized Schedule"):
             final_finish = df["Finish"].max()
             st.success(f"All samples completed by: {final_finish}")
 
-            # ========================================================
-            # SUMMARY BY SAMPLE TYPE
-            # ========================================================
-
             st.subheader("Summary by Sample Type")
 
             summary_df = (
                 df.groupby("Type")
                 .agg(
                     Total_Samples_Processed=("Qty", "sum"),
-                    First_Start=("Start", "min"),
+                    Receipt_Time=("Receipt Time", "min"),
+                    Sorting_End=("Sorting End", "min"),
+                    First_Reduction_Start=("Start", "min"),
                     Final_Finish=("Finish", "max"),
                     Total_Cycles=("Cycle No.", "max"),
-                    Total_Duration_Minutes=("Duration Minutes", "sum"),
+                    Total_Reduction_Minutes=("Duration Minutes", "sum"),
                     Max_Personnel_Used_At_One_Time=("Personnel", "max"),
                 )
                 .reset_index()
             )
 
             st.dataframe(summary_df, use_container_width=True)
-
-            # ========================================================
-            # PLATE GANTT CHART
-            # ========================================================
 
             st.subheader("Plate Gantt Chart")
 
@@ -319,7 +363,6 @@ if st.button("Generate Optimized Schedule"):
                 total_qty = row["Qty"]
                 plate_count = len(plates)
 
-                # distribute samples across plates
                 base_qty = total_qty // plate_count
                 remainder = total_qty % plate_count
 
