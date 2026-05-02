@@ -447,7 +447,7 @@ if st.button("Generate Optimized Schedule"):
                 )
                 .reset_index()
             )
-                        if not drying_df.empty:
+            if not drying_df.empty:
                 drying_summary = drying_df.groupby("Type").agg(
                     First_Drying_Start=("Start", "min"),
                     Final_Drying_Finish=("Finish", "max"),
