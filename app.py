@@ -12,7 +12,7 @@ from ortools.sat.python import cp_model
 # ============================================================
 
 st.set_page_config(page_title="Sample Scheduler", layout="wide")
-st.title("Sample Preparation Optimizer (Sorting + OR-Tools + Plate Gantt)")
+st.title("Sample Preparation Optimizer (Sorting + OR-Tools + Drying Gantts)")
 
 TOTAL_PLATES = 5
 TIME_UNIT = 5
@@ -32,6 +32,22 @@ sorting_minutes = {
     "Mine": 30,
     "Sublot": 35,
     "Lot Quality": 30,
+}
+
+# Drying rules
+drying_minutes = {
+    "Sublot": 240,
+    "Face": 180,
+    "Mine": 210,
+    "Lot Quality": 240,
+}
+
+SHELVES_PER_OVEN = 8
+drying_capacity_per_shelf = {
+    "Sublot": 4,
+    "Face": 26,
+    "Mine": 8,
+    "Lot Quality": 1,
 }
 
 
@@ -66,6 +82,16 @@ time_limit = st.sidebar.slider(
     max_value=60,
     value=15
 )
+
+
+st.sidebar.subheader("Drying Oven Availability")
+default_shift_start = datetime(2026, 5, 2, 14, 0).time()
+default_shift_end = datetime(2026, 5, 3, 6, 0).time()
+
+window_start = st.sidebar.time_input("Higher-capacity window start", value=default_shift_start)
+window_end = st.sidebar.time_input("Higher-capacity window end", value=default_shift_end)
+ovens_high = st.sidebar.selectbox("Ovens operating during higher-capacity window", [1, 2], index=1)
+ovens_low = st.sidebar.selectbox("Ovens operating outside that window", [1, 2], index=0)
 
 
 # ============================================================
@@ -288,6 +314,71 @@ def assign_plates(jobs):
     return output
 
 
+
+
+def is_within_daily_window(ts, start_t, end_t):
+    t = ts.time()
+    if start_t <= end_t:
+        return start_t <= t < end_t
+    return t >= start_t or t < end_t
+
+
+def ovens_available_at(ts, start_t, end_t, high, low):
+    return high if is_within_daily_window(ts, start_t, end_t) else low
+
+
+def allocate_drying_jobs(reduction_jobs):
+    drying_jobs = []
+    reduction_jobs_sorted = sorted(reduction_jobs, key=lambda x: (x["Finish"], x["Priority"]))
+
+    for job in reduction_jobs_sorted:
+        sample_type = job["Type"]
+        qty = job["Qty"]
+        finish_time = job["Finish"]
+
+        shelf_capacity = drying_capacity_per_shelf[sample_type]
+        shelves_needed = math.ceil(qty / shelf_capacity)
+        duration = timedelta(minutes=drying_minutes[sample_type])
+
+        current = finish_time
+        assigned_ovens = []
+
+        while not assigned_ovens:
+            available_ovens = ovens_available_at(current, window_start, window_end, ovens_high, ovens_low)
+            oven_candidates = [f"Oven {i}" for i in range(1, available_ovens + 1)]
+
+            active = []
+            for dj in drying_jobs:
+                if not (current + duration <= dj["Start"] or current >= dj["Finish"]):
+                    active.extend(dj["Ovens"])
+
+            free_ovens = [o for o in oven_candidates if active.count(o) < SHELVES_PER_OVEN]
+
+            for oven in free_ovens:
+                free_shelves = SHELVES_PER_OVEN - active.count(oven)
+                take = min(free_shelves, shelves_needed - len(assigned_ovens))
+                assigned_ovens.extend([oven] * take)
+                if len(assigned_ovens) >= shelves_needed:
+                    break
+
+            if len(assigned_ovens) < shelves_needed:
+                assigned_ovens = []
+                current += timedelta(minutes=TIME_UNIT)
+
+        drying_jobs.append({
+            "Type": sample_type,
+            "Qty": qty,
+            "Priority": job["Priority"],
+            "Reduction Finish": finish_time,
+            "Start": current,
+            "Finish": current + duration,
+            "Duration Minutes": drying_minutes[sample_type],
+            "Shelves Needed": shelves_needed,
+            "Ovens": assigned_ovens,
+        })
+
+    return drying_jobs
+
 # ============================================================
 # RUN APP
 # ============================================================
@@ -332,9 +423,14 @@ if st.button("Generate Optimized Schedule"):
                 use_container_width=True
             )
 
-            final_finish = df["Finish"].max()
-            st.success(f"All samples completed by: {final_finish}")
+            drying_jobs = allocate_drying_jobs(jobs)
+            drying_df = pd.DataFrame(drying_jobs)
 
+            final_reduction_finish = df["Finish"].max()
+            final_drying_finish = drying_df["Finish"].max() if not drying_df.empty else final_reduction_finish
+            st.success(f"Reduction completed by: {final_reduction_finish}")
+            st.success(f"Sorting + Reduction + Drying completed by: {final_drying_finish}")
+            
             st.subheader("Summary by Sample Type")
 
             summary_df = (
@@ -344,13 +440,20 @@ if st.button("Generate Optimized Schedule"):
                     Receipt_Time=("Receipt Time", "min"),
                     Sorting_End=("Sorting End", "min"),
                     First_Reduction_Start=("Start", "min"),
-                    Final_Finish=("Finish", "max"),
+                    Final_Reduction_Finish=("Finish", "max"),
                     Total_Cycles=("Cycle No.", "max"),
                     Total_Reduction_Minutes=("Duration Minutes", "sum"),
                     Max_Personnel_Used_At_One_Time=("Personnel", "max"),
                 )
                 .reset_index()
             )
+                        if not drying_df.empty:
+                drying_summary = drying_df.groupby("Type").agg(
+                    First_Drying_Start=("Start", "min"),
+                    Final_Drying_Finish=("Finish", "max"),
+                    Total_Drying_Minutes=("Duration Minutes", "sum"),
+                ).reset_index()
+                summary_df = summary_df.merge(drying_summary, on="Type", how="left")
 
             st.dataframe(summary_df, use_container_width=True)
 
@@ -414,6 +517,58 @@ if st.button("Generate Optimized Schedule"):
             )
 
             st.plotly_chart(fig, use_container_width=True)
+
+                st.subheader("Drying Oven Gantt Chart")
+            drying_rows = []
+            for _, row in drying_df.iterrows():
+                for i, oven in enumerate(row["Ovens"]):
+                    drying_rows.append({
+                        "Oven": oven,
+                        "Task": row["Type"],
+                        "Start": row["Start"],
+                        "Finish": row["Finish"],
+                        "Label": f"{row['Type']} shelf {i + 1}",
+                    })
+
+            if drying_rows:
+                drying_gantt_df = pd.DataFrame(drying_rows)
+                fig_dry = px.timeline(
+                    drying_gantt_df,
+                    x_start="Start",
+                    x_end="Finish",
+                    y="Oven",
+                    color="Task",
+                    text="Label",
+                    color_discrete_map=color_map,
+                )
+                fig_dry.update_yaxes(autorange="reversed")
+                fig_dry.update_layout(height=500, xaxis_title="Time", yaxis_title="Drying Oven")
+                st.plotly_chart(fig_dry, use_container_width=True)
+
+            st.subheader("Overall Step Gantt by Sample Type")
+            overall_rows = []
+            for sample_type in summary_df["Type"]:
+                type_rows = df[df["Type"] == sample_type]
+                if type_rows.empty:
+                    continue
+                sorting_start = type_rows["Receipt Time"].min()
+                sorting_end = type_rows["Sorting End"].min()
+                reduction_start = type_rows["Start"].min()
+                reduction_end = type_rows["Finish"].max()
+
+                overall_rows.append({"Type": sample_type, "Step": "Sorting", "Start": sorting_start, "Finish": sorting_end})
+                overall_rows.append({"Type": sample_type, "Step": "Reduction", "Start": reduction_start, "Finish": reduction_end})
+
+                drows = drying_df[drying_df["Type"] == sample_type]
+                if not drows.empty:
+                    overall_rows.append({"Type": sample_type, "Step": "Drying", "Start": drows["Start"].min(), "Finish": drows["Finish"].max()})
+
+            if overall_rows:
+                overall_df = pd.DataFrame(overall_rows)
+                fig_overall = px.timeline(overall_df, x_start="Start", x_end="Finish", y="Type", color="Step", text="Step")
+                fig_overall.update_yaxes(autorange="reversed")
+                fig_overall.update_layout(height=450, xaxis_title="Time", yaxis_title="Sample Type")
+                st.plotly_chart(fig_overall, use_container_width=True)
 
     except Exception as e:
         st.error(f"Error: {e}")
