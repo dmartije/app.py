@@ -19,10 +19,10 @@ TIME_UNIT = 5
 PLATES = [f"Plate {i}" for i in range(1, TOTAL_PLATES + 1)]
 
 rules = {
-    "Sublot": {"priority": 1, "minutes": 15, "personnel": 4, "capacity": 1},
+    "Sublot": {"priority": 1, "minutes": 30, "personnel": 4, "capacity": 1},
     "Face": {"priority": 2, "minutes": 5, "personnel": 1, "capacity": 10},
     "Mine": {"priority": 3, "minutes": 10, "personnel": 3, "capacity": 2},
-    "Lot Quality": {"priority": 4, "minutes": 15, "personnel": 1, "capacity": 1},
+    "Lot Quality": {"priority": 4, "minutes": 30, "personnel": 1, "capacity": 1},
 }
 
 
