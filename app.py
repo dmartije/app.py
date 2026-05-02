@@ -1,39 +1,51 @@
+# ============================================================
+# FAST SAMPLE PREPARATION SCHEDULER
+# ============================================================
+# This app:
+# - Accepts sample quantities and personnel count
+# - Uses 5 fixed working plates
+# - Prioritizes Sublot > Face > Mine > Lot Quality
+# - Reuses personnel and plates after each cycle
+# - Generates a schedule table and Gantt chart
+#
+# This is a FAST practical scheduler.
+# It is designed to run quickly and avoid the slow optimization error.
+# ============================================================
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
-from itertools import product
 import math
-import copy
 
 # ============================================================
-# SAMPLE PREPARATION DYNAMIC SCHEDULER
-# ============================================================
-# This app dynamically schedules sample preparation work.
-#
-# It considers:
-# - fixed 5 working plates
-# - available personnel
-# - sample priority
-# - different processing times
-# - different personnel requirements
-# - different plate capacities
-# - dynamic reassignment after each cycle finishes
-#
-# Important:
-# This is an industrial-style dynamic optimizer using beam search.
-# It is much better than fixed allocation because resources are reused
-# after every 5/10/15-minute cycle.
+# PAGE SETUP
 # ============================================================
 
-st.set_page_config(page_title="Dynamic Sample Scheduler", layout="wide")
-st.title("Dynamic Sample Preparation Scheduler")
+st.set_page_config(page_title="Fast Sample Scheduler", layout="wide")
+st.title("Fast Sample Preparation Scheduler")
+
+# ============================================================
+# FIXED RESOURCES
+# ============================================================
 
 TOTAL_PLATES = 5
 PLATE_IDS = [f"Plate {i}" for i in range(1, TOTAL_PLATES + 1)]
 
 # ============================================================
-# PROCESS RULES
+# PROCESSING RULES
+# ============================================================
+# priority:
+#   lower number = higher priority
+#
+# minutes_per_cycle:
+#   duration of one cycle
+#
+# personnel_per_sample:
+#   personnel needed to process 1 sample at the same time
+#
+# plate_capacity:
+#   sample capacity per plate
 # ============================================================
 
 rules = {
@@ -64,7 +76,7 @@ rules = {
 }
 
 # ============================================================
-# USER INPUT
+# INPUT SECTION
 # ============================================================
 
 st.sidebar.header("Input Data")
@@ -89,390 +101,215 @@ samples = {
     "Lot Quality": st.sidebar.number_input("Lot Quality Samples", min_value=0, value=1, step=1)
 }
 
-beam_width = st.sidebar.slider(
-    "Optimization Search Strength",
-    min_value=50,
-    max_value=1000,
-    value=300,
-    step=50
-)
-
 # ============================================================
 # HELPER FUNCTIONS
 # ============================================================
 
-def useful_options(sample_type, remaining_qty, available_personnel, available_plates):
+def get_priority_order():
+    """Returns sample types in priority order."""
+    return sorted(rules.keys(), key=lambda x: rules[x]["priority"])
+
+
+def max_samples_this_cycle(sample_type, remaining, available_personnel, available_plates):
     """
-    Generates useful personnel/plate combinations for one sample type.
-    It avoids useless combinations, such as assigning 2 plates to 1 Lot Quality sample.
-    """
+    Calculates how many samples can be processed in the current cycle.
 
-    if remaining_qty <= 0:
-        return [(0, 0)]
-
-    rule = rules[sample_type]
-    options = [(0, 0)]
-
-    for plates in range(1, available_plates + 1):
-        max_samples_by_plate = plates * rule["plate_capacity"]
-        max_samples_this_cycle = min(remaining_qty, max_samples_by_plate)
-
-        for samples_this_cycle in range(1, max_samples_this_cycle + 1):
-            personnel_needed = samples_this_cycle * rule["personnel_per_sample"]
-
-            if personnel_needed <= available_personnel:
-                options.append((personnel_needed, plates))
-
-    return options
-
-
-def cycle_capacity(sample_type, personnel, plates):
-    """
-    Calculates how many samples can be processed in one cycle.
+    Limited by:
+    - remaining samples
+    - available personnel
+    - available plates
     """
 
     rule = rules[sample_type]
 
-    personnel_capacity = personnel // rule["personnel_per_sample"]
-    plate_capacity = plates * rule["plate_capacity"]
+    by_personnel = available_personnel // rule["personnel_per_sample"]
+    by_plates = available_plates * rule["plate_capacity"]
 
-    return min(personnel_capacity, plate_capacity)
+    return min(remaining, by_personnel, by_plates)
 
 
-def resources_used(running_jobs):
+def required_plates(sample_type, samples_to_process):
     """
-    Calculates currently occupied personnel and plates.
-    """
-
-    used_personnel = sum(job["Personnel"] for job in running_jobs)
-    used_plates = []
-
-    for job in running_jobs:
-        used_plates.extend(job["Plates"])
-
-    return used_personnel, used_plates
-
-
-def next_finish_time(running_jobs):
-    """
-    Finds the nearest finishing job time.
+    Calculates how many plates are needed for the samples to process.
     """
 
-    if not running_jobs:
-        return None
-
-    return min(job["Finish"] for job in running_jobs)
+    rule = rules[sample_type]
+    return math.ceil(samples_to_process / rule["plate_capacity"])
 
 
-def complete_finished_jobs(state):
+def required_personnel(sample_type, samples_to_process):
     """
-    Completes all jobs finishing at the current time.
+    Calculates how many personnel are needed for the samples to process.
     """
 
-    current_time = state["time"]
-
-    still_running = []
-
-    for job in state["running"]:
-        if job["Finish"] <= current_time:
-            state["remaining"][job["Sample Type"]] -= job["Processed Samples"]
-            state["schedule"].append(job)
-        else:
-            still_running.append(job)
-
-    state["running"] = still_running
-
-    return state
+    rule = rules[sample_type]
+    return samples_to_process * rule["personnel_per_sample"]
 
 
-def all_done(state):
+def assign_plates(available_plates, number_needed):
     """
-    Checks if all samples are completed and no jobs are running.
+    Assigns physical plate numbers.
     """
 
-    return all(qty <= 0 for qty in state["remaining"].values()) and not state["running"]
-
-
-def optimistic_lower_bound_minutes(remaining, total_personnel):
-    """
-    Estimates the best possible remaining time.
-    This helps the optimizer keep better schedules during beam search.
-    """
-
-    max_required_minutes = 0
-
-    for sample_type, qty in remaining.items():
-        if qty <= 0:
-            continue
-
-        rule = rules[sample_type]
-
-        max_personnel_capacity = total_personnel // rule["personnel_per_sample"]
-        max_plate_capacity = TOTAL_PLATES * rule["plate_capacity"]
-
-        max_capacity = min(max_personnel_capacity, max_plate_capacity)
-
-        if max_capacity <= 0:
-            return 999999
-
-        cycles = math.ceil(qty / max_capacity)
-        required_minutes = cycles * rule["minutes_per_cycle"]
-
-        max_required_minutes = max(max_required_minutes, required_minutes)
-
-    return max_required_minutes
-
-
-def state_score(state, total_personnel):
-    """
-    Scores a state.
-    Lower score is better.
-    """
-
-    lower_bound = optimistic_lower_bound_minutes(state["remaining"], total_personnel)
-
-    weighted_remaining = sum(
-        qty * rules[sample_type]["priority"]
-        for sample_type, qty in state["remaining"].items()
-    )
-
-    running_count = len(state["running"])
-
-    return (
-        state["time"] + timedelta(minutes=lower_bound),
-        weighted_remaining,
-        running_count
-    )
-
-
-def generate_allocations(state, total_personnel):
-    """
-    Generates possible new assignments using currently available personnel and plates.
-    Allows staggered processing by allowing some sample types to wait.
-    """
-
-    used_personnel, used_plate_ids = resources_used(state["running"])
-
-    available_personnel = total_personnel - used_personnel
-    available_plate_ids = [p for p in PLATE_IDS if p not in used_plate_ids]
-    available_plates = len(available_plate_ids)
-
-    if available_personnel <= 0 or available_plates <= 0:
-        return []
-
-    running_types = {job["Sample Type"] for job in state["running"]}
-
-    candidate_types = [
-        sample_type
-        for sample_type, qty in state["remaining"].items()
-        if qty > 0 and sample_type not in running_types
-    ]
-
-    candidate_types = sorted(candidate_types, key=lambda x: rules[x]["priority"])
-
-    if not candidate_types:
-        return []
-
-    option_lists = []
-
-    for sample_type in candidate_types:
-        option_lists.append(
-            useful_options(
-                sample_type,
-                state["remaining"][sample_type],
-                available_personnel,
-                available_plates
-            )
-        )
-
-    allocations = []
-
-    for combination in product(*option_lists):
-        total_p = sum(item[0] for item in combination)
-        total_pl = sum(item[1] for item in combination)
-
-        if total_p == 0 or total_pl == 0:
-            continue
-
-        if total_p > available_personnel or total_pl > available_plates:
-            continue
-
-        allocation = {}
-
-        plate_index = 0
-
-        for sample_type, (personnel, plates) in zip(candidate_types, combination):
-            if personnel > 0 and plates > 0:
-                assigned_plates = available_plate_ids[plate_index:plate_index + plates]
-                plate_index += plates
-
-                allocation[sample_type] = {
-                    "Personnel": personnel,
-                    "Plates": assigned_plates
-                }
-
-        allocations.append(allocation)
-
-    return allocations
-
-
-def start_jobs_from_allocation(state, allocation):
-    """
-    Starts one cycle for each assigned sample type.
-    """
-
-    new_state = copy.deepcopy(state)
-
-    for sample_type, assign in allocation.items():
-        personnel = assign["Personnel"]
-        plates = assign["Plates"]
-
-        capacity = cycle_capacity(sample_type, personnel, len(plates))
-
-        if capacity <= 0:
-            continue
-
-        processed = min(new_state["remaining"][sample_type], capacity)
-
-        finish_time = new_state["time"] + timedelta(
-            minutes=rules[sample_type]["minutes_per_cycle"]
-        )
-
-        job = {
-            "Sample Type": sample_type,
-            "Processed Samples": processed,
-            "Personnel": personnel,
-            "Plates": plates,
-            "Start": new_state["time"],
-            "Finish": finish_time,
-            "Duration Minutes": rules[sample_type]["minutes_per_cycle"],
-            "Priority": rules[sample_type]["priority"]
-        }
-
-        new_state["running"].append(job)
-
-    return new_state
+    return available_plates[:number_needed]
 
 
 # ============================================================
-# MAIN OPTIMIZER
+# FAST GREEDY SCHEDULER
+# ============================================================
+# How it works:
+# 1. Start at received date/time.
+# 2. Check remaining samples.
+# 3. Assign available personnel and plates by priority.
+# 4. Start cycles simultaneously.
+# 5. Move time to the next finished cycle.
+# 6. Free resources and repeat until all samples are done.
 # ============================================================
 
-def dynamic_optimize(samples, total_personnel, start_time, beam_width):
-    """
-    Dynamic beam-search scheduler.
+def fast_schedule(samples, total_personnel, start_time):
+    remaining = {k: v for k, v in samples.items() if v > 0}
+    current_time = start_time
+    running_jobs = []
+    completed_jobs = []
 
-    It repeatedly:
-    1. checks remaining samples
-    2. checks available personnel
-    3. checks available plates
-    4. considers priority
-    5. starts the best next processing cycles
-    6. advances time to the next completed cycle
-    7. reuses personnel and plates
-    """
+    max_loop = 10000
+    loop_count = 0
 
-    initial_state = {
-        "time": start_time,
-        "remaining": dict(samples),
-        "running": [],
-        "schedule": []
-    }
+    while remaining or running_jobs:
+        loop_count += 1
 
-    beam = [initial_state]
-    completed_states = []
+        if loop_count > max_loop:
+            raise RuntimeError("Scheduler stopped because maximum loop limit was reached.")
 
-    max_iterations = 1000
+        # ----------------------------------------------------
+        # Step 1: Complete jobs that finish at current_time
+        # ----------------------------------------------------
+        still_running = []
 
-    for _ in range(max_iterations):
+        for job in running_jobs:
+            if job["Finish"] <= current_time:
+                completed_jobs.append(job)
+            else:
+                still_running.append(job)
 
-        next_beam = []
+        running_jobs = still_running
 
-        for state in beam:
-            state = copy.deepcopy(state)
-            state = complete_finished_jobs(state)
+        # ----------------------------------------------------
+        # Step 2: Calculate available resources
+        # ----------------------------------------------------
+        used_personnel = sum(job["Personnel"] for job in running_jobs)
 
-            if all_done(state):
-                completed_states.append(state)
+        used_plates = []
+        for job in running_jobs:
+            used_plates.extend(job["Plates"])
+
+        available_personnel = total_personnel - used_personnel
+        available_plates = [p for p in PLATE_IDS if p not in used_plates]
+
+        # ----------------------------------------------------
+        # Step 3: Assign new work by priority
+        # ----------------------------------------------------
+        started_any_job = False
+
+        for sample_type in get_priority_order():
+
+            if sample_type not in remaining:
                 continue
 
-            allocations = generate_allocations(state, total_personnel)
+            if remaining[sample_type] <= 0:
+                continue
 
-            if allocations:
-                for allocation in allocations:
-                    new_state = start_jobs_from_allocation(state, allocation)
-                    next_beam.append(new_state)
-            else:
-                nft = next_finish_time(state["running"])
+            if available_personnel <= 0 or len(available_plates) <= 0:
+                break
 
-                if nft is not None:
-                    state["time"] = nft
-                    next_beam.append(state)
+            samples_can_process = max_samples_this_cycle(
+                sample_type=sample_type,
+                remaining=remaining[sample_type],
+                available_personnel=available_personnel,
+                available_plates=len(available_plates)
+            )
 
-        if completed_states:
-            break
+            if samples_can_process <= 0:
+                continue
 
-        if not next_beam:
-            break
+            plates_needed = required_plates(sample_type, samples_can_process)
+            personnel_needed = required_personnel(sample_type, samples_can_process)
 
-        next_beam = sorted(
-            next_beam,
-            key=lambda s: state_score(s, total_personnel)
-        )
+            assigned_plates = assign_plates(available_plates, plates_needed)
 
-        beam = next_beam[:beam_width]
+            finish_time = current_time + timedelta(
+                minutes=rules[sample_type]["minutes_per_cycle"]
+            )
 
-    if not completed_states:
-        return None
+            job = {
+                "Sample Type": sample_type,
+                "Processed Samples": samples_can_process,
+                "Personnel": personnel_needed,
+                "Plates": assigned_plates,
+                "Start": current_time,
+                "Finish": finish_time,
+                "Duration Minutes": rules[sample_type]["minutes_per_cycle"],
+                "Priority": rules[sample_type]["priority"]
+            }
 
-    best_state = sorted(
-        completed_states,
-        key=lambda s: (
-            max(job["Finish"] for job in s["schedule"]),
-            sum(job["Priority"] * job["Duration Minutes"] for job in s["schedule"])
-        )
-    )[0]
+            running_jobs.append(job)
 
-    return best_state
+            remaining[sample_type] -= samples_can_process
+
+            if remaining[sample_type] <= 0:
+                del remaining[sample_type]
+
+            available_personnel -= personnel_needed
+
+            for plate in assigned_plates:
+                available_plates.remove(plate)
+
+            started_any_job = True
+
+        # ----------------------------------------------------
+        # Step 4: Advance time
+        # ----------------------------------------------------
+        if running_jobs:
+            next_finish = min(job["Finish"] for job in running_jobs)
+
+            if next_finish > current_time:
+                current_time = next_finish
+        elif not started_any_job and remaining:
+            raise RuntimeError("No work could be scheduled. Check personnel and plate rules.")
+
+    return completed_jobs
 
 
 # ============================================================
 # RUN APP
 # ============================================================
 
-if st.button("Generate Dynamic Optimized Schedule"):
+if st.button("Generate Fast Schedule"):
 
-    active_samples = {k: v for k, v in samples.items() if v > 0}
-
-    if not active_samples:
-        st.warning("Please enter at least one sample.")
-    else:
-        result = dynamic_optimize(
-            samples=active_samples,
+    try:
+        jobs = fast_schedule(
+            samples=samples,
             total_personnel=total_personnel,
-            start_time=start_datetime,
-            beam_width=beam_width
+            start_time=start_datetime
         )
 
-        if result is None:
-            st.error("No valid schedule found. Check personnel and sample quantity.")
+        if not jobs:
+            st.warning("No samples entered.")
         else:
-            schedule_df = pd.DataFrame(result["schedule"])
+            df = pd.DataFrame(jobs)
+            df["Plates"] = df["Plates"].apply(lambda x: ", ".join(x))
+            df = df.sort_values(["Start", "Priority"])
 
-            schedule_df["Plates"] = schedule_df["Plates"].apply(lambda x: ", ".join(x))
-
-            schedule_df = schedule_df.sort_values(["Start", "Priority"])
-
-            final_finish = schedule_df["Finish"].max()
+            final_finish = df["Finish"].max()
 
             st.success(
                 f"All samples completed by: {final_finish.strftime('%B %d, %Y %I:%M %p')}"
             )
 
-            st.subheader("Detailed Dynamic Schedule")
+            st.subheader("Detailed Schedule")
 
             st.dataframe(
-                schedule_df[
+                df[
                     [
                         "Sample Type",
                         "Processed Samples",
@@ -488,9 +325,8 @@ if st.button("Generate Dynamic Optimized Schedule"):
 
             st.subheader("Summary by Sample Type")
 
-            summary_df = (
-                schedule_df
-                .groupby("Sample Type")
+            summary = (
+                df.groupby("Sample Type")
                 .agg(
                     Total_Samples_Processed=("Processed Samples", "sum"),
                     First_Start=("Start", "min"),
@@ -500,11 +336,11 @@ if st.button("Generate Dynamic Optimized Schedule"):
                 .reset_index()
             )
 
-            st.dataframe(summary_df, use_container_width=True)
+            st.dataframe(summary, use_container_width=True)
 
             st.subheader("Gantt Chart")
 
-            gantt_df = schedule_df.copy()
+            gantt_df = df.copy()
             gantt_df["Task"] = gantt_df["Sample Type"] + " - " + gantt_df["Plates"]
 
             fig = px.timeline(
@@ -517,7 +353,6 @@ if st.button("Generate Dynamic Optimized Schedule"):
             )
 
             fig.update_yaxes(autorange="reversed")
-
             fig.update_layout(
                 height=650,
                 xaxis_title="Time",
@@ -526,5 +361,8 @@ if st.button("Generate Dynamic Optimized Schedule"):
 
             st.plotly_chart(fig, use_container_width=True)
 
+    except Exception as e:
+        st.error(f"Error: {e}")
+
 else:
-    st.info("Input your sample quantities, personnel, and start time, then click Generate Dynamic Optimized Schedule.")
+    st.info("Enter your sample data, then click Generate Fast Schedule.")
