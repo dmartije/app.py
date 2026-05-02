@@ -206,13 +206,48 @@ if st.button("Generate Schedule"):
 
     gantt_df = pd.DataFrame(gantt)
 
-    fig = px.timeline(
-        gantt_df,
-        x_start="Start",
-        x_end="Finish",
-        y="Plate",
-        color="Task"
-    )
+# Add label text (sample count)
+gantt = []
+
+for _, r in df.iterrows():
+    plates = r["Plate"].split(", ")
+    for p in plates:
+        gantt.append({
+            "Plate": p,
+            "Task": r["Type"],
+            "Start": r["Start"],
+            "Finish": r["Finish"],
+            "Label": f"{r['Type']} ({r['Qty']})"  # <-- shows sample count
+        })
+
+gantt_df = pd.DataFrame(gantt)
+
+# Custom colors
+color_map = {
+    "Mine": "green",
+    "Sublot": "orange",
+    "Face": "blue",
+    "Lot Quality": "red"
+}
+
+fig = px.timeline(
+    gantt_df,
+    x_start="Start",
+    x_end="Finish",
+    y="Plate",
+    color="Task",
+    text="Label",  # <-- show label on bars
+    color_discrete_map=color_map
+)
+
+fig.update_yaxes(autorange="reversed")
+
+fig.update_traces(
+    textposition="inside",
+    textfont_size=12
+)
+
+st.plotly_chart(fig, use_container_width=True)
 
     fig.update_yaxes(autorange="reversed")
 
