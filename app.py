@@ -546,6 +546,7 @@ if st.button("Generate Optimized Schedule"):
                     label = f"{sample_short.get(row['Type'], row['Type'][:2].upper())} {oven_num}-{shelf_name}"
                     drying_rows.append({
                         "Oven": oven_name,
+                        "Shelf Slot": slot,
                         "Task": row["Type"],
                         "Start": row["Start"],
                         "Finish": row["Finish"],
@@ -558,13 +559,13 @@ if st.button("Generate Optimized Schedule"):
                     drying_gantt_df,
                     x_start="Start",
                     x_end="Finish",
-                    y="Oven",
+                    y="Shelf Slot",
                     color="Task",
                     text="Label",
                     color_discrete_map=color_map,
                 )
                 fig_dry.update_yaxes(autorange="reversed")
-                fig_dry.update_layout(height=500, xaxis_title="Time", yaxis_title="Drying Oven")
+                fig_dry.update_layout(height=650, xaxis_title="Time", yaxis_title="Drying Oven Shelf")
                 st.plotly_chart(fig_dry, use_container_width=True)
 
             st.subheader("Overall Step Gantt by Sample Type")
@@ -591,7 +592,7 @@ if st.button("Generate Optimized Schedule"):
                 fig_overall.update_yaxes(autorange="reversed")
                 fig_overall.update_layout(height=450, xaxis_title="Time", yaxis_title="Sample Type")
                 st.plotly_chart(fig_overall, use_container_width=True)
-
+                
     except Exception as e:
         st.error(f"Error: {e}")
 
