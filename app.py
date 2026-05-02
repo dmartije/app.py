@@ -92,6 +92,7 @@ window_start = st.sidebar.time_input("Higher-capacity window start", value=defau
 window_end = st.sidebar.time_input("Higher-capacity window end", value=default_shift_end)
 ovens_high = st.sidebar.selectbox("Ovens operating during higher-capacity window", [1, 2], index=1)
 ovens_low = st.sidebar.selectbox("Ovens operating outside that window", [1, 2], index=0)
+max_face_drying_batch = st.sidebar.number_input("Max Face drying transfer batch", min_value=1, max_value=1000, value=150)
 
 
 # ============================================================
@@ -334,28 +335,42 @@ def allocate_drying_jobs(reduction_jobs):
     if reduction_df.empty:
         return drying_jobs
 
-    batch_jobs = (
-        reduction_df.groupby("Type")
-        .agg(
-            Qty=("Qty", "sum"),
-            Priority=("Priority", "min"),
-            Reduction_Finish=("Finish", "max"),
-        )
-        .reset_index()
-        .sort_values(["Reduction_Finish", "Priority"])
-    )
+    batch_limits = {
+        "Face": int(max_face_drying_batch),
+        "Mine": 10**9,
+        "Sublot": 10**9,
+        "Lot Quality": 10**9,
+    }
 
-    for _, batch in batch_jobs.iterrows():
+    # Split reduction outputs into transfer batches that can start drying as soon as reduced.
+    transfer_batches = []
+    for _, r in reduction_df.sort_values(["Finish", "Priority", "Type"]).iterrows():
+        sample_type = r["Type"]
+        remaining = int(r["Qty"])
+        cap = batch_limits.get(sample_type, 10**9)
+
+        while remaining > 0:
+            take = min(remaining, cap)
+            transfer_batches.append({
+                "Type": sample_type,
+                "Qty": take,
+                "Priority": int(r["Priority"]),
+                "Ready Time": r["Finish"],
+            })
+            remaining -= take
+
+    transfer_batches = sorted(transfer_batches, key=lambda x: (x["Ready Time"], x["Priority"]))
+
+    for batch in transfer_batches:
         sample_type = batch["Type"]
-        qty = int(batch["Qty"])
-        finish_time = batch["Reduction_Finish"]
-        priority = int(batch["Priority"])
+        qty = batch["Qty"]
+        ready_time = batch["Ready Time"]
 
         shelf_capacity = drying_capacity_per_shelf[sample_type]
         shelves_needed = math.ceil(qty / shelf_capacity)
         duration = timedelta(minutes=drying_minutes[sample_type])
 
-        current = finish_time
+        current = ready_time
         assigned_shelves = []
 
         while not assigned_shelves:
@@ -383,8 +398,8 @@ def allocate_drying_jobs(reduction_jobs):
         drying_jobs.append({
             "Type": sample_type,
             "Qty": qty,
-            "Priority": priority,
-            "Reduction Finish": finish_time,
+            "Priority": batch["Priority"],
+            "Reduction Finish": ready_time,
             "Start": current,
             "Finish": current + duration,
             "Duration Minutes": drying_minutes[sample_type],
