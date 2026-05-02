@@ -1,51 +1,62 @@
 # ============================================================
-# FAST SAMPLE PREPARATION SCHEDULER
+# OR-TOOLS SAMPLE PREPARATION OPTIMIZER
 # ============================================================
-# This app:
-# - Accepts sample quantities and personnel count
-# - Uses 5 fixed working plates
-# - Prioritizes Sublot > Face > Mine > Lot Quality
-# - Reuses personnel and plates after each cycle
-# - Generates a schedule table and Gantt chart
+# This app creates an optimized sample preparation schedule.
 #
-# This is a FAST practical scheduler.
-# It is designed to run quickly and avoid the slow optimization error.
+# It considers:
+# - 5 fixed working plates
+# - available personnel
+# - sample priority
+# - dynamic reassignment of personnel
+# - dynamic reuse of plates
+# - staggered starts
+# - least overall completion time
+#
+# Optimization engine:
+# - Google OR-Tools CP-SAT Solver
 # ============================================================
 
-import streamlit as st
+import math
+from datetime import datetime, timedelta
+
 import pandas as pd
 import plotly.express as px
-from datetime import datetime, timedelta
-import math
+import streamlit as st
+
+from ortools.sat.python import cp_model
+
 
 # ============================================================
 # PAGE SETUP
 # ============================================================
 
-st.set_page_config(page_title="Fast Sample Scheduler", layout="wide")
-st.title("Fast Sample Preparation Scheduler")
+st.set_page_config(page_title="OR-Tools Sample Scheduler", layout="wide")
+st.title("OR-Tools Sample Preparation Optimizer")
+
 
 # ============================================================
 # FIXED RESOURCES
 # ============================================================
 
 TOTAL_PLATES = 5
+TIME_UNIT_MINUTES = 5
 PLATE_IDS = [f"Plate {i}" for i in range(1, TOTAL_PLATES + 1)]
+
 
 # ============================================================
 # PROCESSING RULES
 # ============================================================
 # priority:
-#   lower number = higher priority
+#   Lower number = higher priority
 #
 # minutes_per_cycle:
-#   duration of one cycle
+#   One cycle duration
 #
 # personnel_per_sample:
-#   personnel needed to process 1 sample at the same time
+#   Number of personnel needed to process 1 sample at the same time
 #
 # plate_capacity:
-#   sample capacity per plate
+#   Number of samples one plate can hold per cycle
 # ============================================================
 
 rules = {
@@ -53,37 +64,38 @@ rules = {
         "priority": 1,
         "minutes_per_cycle": 15,
         "personnel_per_sample": 4,
-        "plate_capacity": 1
+        "plate_capacity": 1,
     },
     "Face": {
         "priority": 2,
         "minutes_per_cycle": 5,
         "personnel_per_sample": 1,
-        "plate_capacity": 10
+        "plate_capacity": 10,
     },
     "Mine": {
         "priority": 3,
         "minutes_per_cycle": 10,
         "personnel_per_sample": 3,
-        "plate_capacity": 2
+        "plate_capacity": 2,
     },
     "Lot Quality": {
         "priority": 4,
         "minutes_per_cycle": 15,
         "personnel_per_sample": 1,
-        "plate_capacity": 1
-    }
+        "plate_capacity": 1,
+    },
 }
 
+
 # ============================================================
-# INPUT SECTION
+# USER INPUT
 # ============================================================
 
 st.sidebar.header("Input Data")
 
 start_datetime = st.sidebar.datetime_input(
     "Date and Time Received",
-    value=datetime(2026, 5, 2, 8, 0)
+    value=datetime(2026, 5, 2, 8, 0),
 )
 
 total_personnel = st.sidebar.number_input(
@@ -91,222 +103,329 @@ total_personnel = st.sidebar.number_input(
     min_value=1,
     max_value=100,
     value=20,
-    step=1
+    step=1,
 )
 
 samples = {
     "Face": st.sidebar.number_input("Face Samples", min_value=0, value=100, step=1),
     "Mine": st.sidebar.number_input("Mine Samples", min_value=0, value=15, step=1),
     "Sublot": st.sidebar.number_input("Sublot Samples", min_value=0, value=3, step=1),
-    "Lot Quality": st.sidebar.number_input("Lot Quality Samples", min_value=0, value=1, step=1)
+    "Lot Quality": st.sidebar.number_input("Lot Quality Samples", min_value=0, value=1, step=1),
 }
 
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
-
-def get_priority_order():
-    """Returns sample types in priority order."""
-    return sorted(rules.keys(), key=lambda x: rules[x]["priority"])
-
-
-def max_samples_this_cycle(sample_type, remaining, available_personnel, available_plates):
-    """
-    Calculates how many samples can be processed in the current cycle.
-
-    Limited by:
-    - remaining samples
-    - available personnel
-    - available plates
-    """
-
-    rule = rules[sample_type]
-
-    by_personnel = available_personnel // rule["personnel_per_sample"]
-    by_plates = available_plates * rule["plate_capacity"]
-
-    return min(remaining, by_personnel, by_plates)
-
-
-def required_plates(sample_type, samples_to_process):
-    """
-    Calculates how many plates are needed for the samples to process.
-    """
-
-    rule = rules[sample_type]
-    return math.ceil(samples_to_process / rule["plate_capacity"])
-
-
-def required_personnel(sample_type, samples_to_process):
-    """
-    Calculates how many personnel are needed for the samples to process.
-    """
-
-    rule = rules[sample_type]
-    return samples_to_process * rule["personnel_per_sample"]
-
-
-def assign_plates(available_plates, number_needed):
-    """
-    Assigns physical plate numbers.
-    """
-
-    return available_plates[:number_needed]
+max_solver_seconds = st.sidebar.slider(
+    "Solver Time Limit (seconds)",
+    min_value=3,
+    max_value=60,
+    value=15,
+    step=1,
+)
 
 
 # ============================================================
-# FAST GREEDY SCHEDULER
-# ============================================================
-# How it works:
-# 1. Start at received date/time.
-# 2. Check remaining samples.
-# 3. Assign available personnel and plates by priority.
-# 4. Start cycles simultaneously.
-# 5. Move time to the next finished cycle.
-# 6. Free resources and repeat until all samples are done.
+# FAST GREEDY SCHEDULE
+# ------------------------------------------------------------
+# Used only to create a reasonable time horizon for OR-Tools.
 # ============================================================
 
-def fast_schedule(samples, total_personnel, start_time):
+def fast_greedy_upper_bound(samples, total_personnel):
     remaining = {k: v for k, v in samples.items() if v > 0}
-    current_time = start_time
-    running_jobs = []
-    completed_jobs = []
+    current_time_units = 0
+    running = []
 
-    max_loop = 10000
-    loop_count = 0
+    while remaining or running:
+        running = [job for job in running if job["finish"] > current_time_units]
 
-    while remaining or running_jobs:
-        loop_count += 1
-
-        if loop_count > max_loop:
-            raise RuntimeError("Scheduler stopped because maximum loop limit was reached.")
-
-        # ----------------------------------------------------
-        # Step 1: Complete jobs that finish at current_time
-        # ----------------------------------------------------
-        still_running = []
-
-        for job in running_jobs:
-            if job["Finish"] <= current_time:
-                completed_jobs.append(job)
-            else:
-                still_running.append(job)
-
-        running_jobs = still_running
-
-        # ----------------------------------------------------
-        # Step 2: Calculate available resources
-        # ----------------------------------------------------
-        used_personnel = sum(job["Personnel"] for job in running_jobs)
-
-        used_plates = []
-        for job in running_jobs:
-            used_plates.extend(job["Plates"])
+        used_personnel = sum(job["personnel"] for job in running)
+        used_plates = sum(job["plates"] for job in running)
 
         available_personnel = total_personnel - used_personnel
-        available_plates = [p for p in PLATE_IDS if p not in used_plates]
+        available_plates = TOTAL_PLATES - used_plates
 
-        # ----------------------------------------------------
-        # Step 3: Assign new work by priority
-        # ----------------------------------------------------
-        started_any_job = False
+        started = False
 
-        for sample_type in get_priority_order():
-
+        for sample_type in sorted(rules.keys(), key=lambda x: rules[x]["priority"]):
             if sample_type not in remaining:
                 continue
 
-            if remaining[sample_type] <= 0:
+            rule = rules[sample_type]
+
+            max_by_personnel = available_personnel // rule["personnel_per_sample"]
+            max_by_plates = available_plates * rule["plate_capacity"]
+
+            qty = min(remaining[sample_type], max_by_personnel, max_by_plates)
+
+            if qty <= 0:
                 continue
 
-            if available_personnel <= 0 or len(available_plates) <= 0:
-                break
+            personnel_needed = qty * rule["personnel_per_sample"]
+            plates_needed = math.ceil(qty / rule["plate_capacity"])
+            duration_units = rule["minutes_per_cycle"] // TIME_UNIT_MINUTES
 
-            samples_can_process = max_samples_this_cycle(
-                sample_type=sample_type,
-                remaining=remaining[sample_type],
-                available_personnel=available_personnel,
-                available_plates=len(available_plates)
-            )
+            running.append({
+                "finish": current_time_units + duration_units,
+                "personnel": personnel_needed,
+                "plates": plates_needed,
+            })
 
-            if samples_can_process <= 0:
-                continue
-
-            plates_needed = required_plates(sample_type, samples_can_process)
-            personnel_needed = required_personnel(sample_type, samples_can_process)
-
-            assigned_plates = assign_plates(available_plates, plates_needed)
-
-            finish_time = current_time + timedelta(
-                minutes=rules[sample_type]["minutes_per_cycle"]
-            )
-
-            job = {
-                "Sample Type": sample_type,
-                "Processed Samples": samples_can_process,
-                "Personnel": personnel_needed,
-                "Plates": assigned_plates,
-                "Start": current_time,
-                "Finish": finish_time,
-                "Duration Minutes": rules[sample_type]["minutes_per_cycle"],
-                "Priority": rules[sample_type]["priority"]
-            }
-
-            running_jobs.append(job)
-
-            remaining[sample_type] -= samples_can_process
+            remaining[sample_type] -= qty
 
             if remaining[sample_type] <= 0:
                 del remaining[sample_type]
 
             available_personnel -= personnel_needed
+            available_plates -= plates_needed
 
-            for plate in assigned_plates:
-                available_plates.remove(plate)
+            started = True
 
-            started_any_job = True
+        if running:
+            current_time_units = min(job["finish"] for job in running)
+        elif not started and remaining:
+            return None
 
-        # ----------------------------------------------------
-        # Step 4: Advance time
-        # ----------------------------------------------------
-        if running_jobs:
-            next_finish = min(job["Finish"] for job in running_jobs)
+    return current_time_units
 
-            if next_finish > current_time:
-                current_time = next_finish
-        elif not started_any_job and remaining:
-            raise RuntimeError("No work could be scheduled. Check personnel and plate rules.")
 
-    return completed_jobs
+# ============================================================
+# OR-TOOLS OPTIMIZER
+# ============================================================
+
+def solve_with_ortools(samples, total_personnel, start_datetime, max_seconds):
+    active_samples = {k: v for k, v in samples.items() if v > 0}
+
+    if not active_samples:
+        return []
+
+    greedy_horizon = fast_greedy_upper_bound(active_samples, total_personnel)
+
+    if greedy_horizon is None:
+        raise ValueError("No valid schedule is possible with the given personnel and plate limits.")
+
+    horizon = max(greedy_horizon, 1)
+
+    model = cp_model.CpModel()
+
+    start_vars = {}
+    all_options = []
+
+    # --------------------------------------------------------
+    # Create possible cycle options
+    # --------------------------------------------------------
+
+    for sample_type, qty_required in active_samples.items():
+        rule = rules[sample_type]
+
+        duration_units = rule["minutes_per_cycle"] // TIME_UNIT_MINUTES
+
+        max_qty_per_cycle = min(
+            qty_required,
+            total_personnel // rule["personnel_per_sample"],
+            TOTAL_PLATES * rule["plate_capacity"],
+        )
+
+        if max_qty_per_cycle <= 0:
+            raise ValueError(f"Not enough personnel to process {sample_type}.")
+
+        for t in range(0, horizon - duration_units + 1):
+            for qty in range(1, max_qty_per_cycle + 1):
+                personnel_needed = qty * rule["personnel_per_sample"]
+                plates_needed = math.ceil(qty / rule["plate_capacity"])
+
+                if personnel_needed > total_personnel:
+                    continue
+
+                if plates_needed > TOTAL_PLATES:
+                    continue
+
+                var = model.NewBoolVar(f"{sample_type}_t{t}_q{qty}")
+
+                option = {
+                    "sample_type": sample_type,
+                    "start": t,
+                    "end": t + duration_units,
+                    "duration_units": duration_units,
+                    "qty": qty,
+                    "personnel": personnel_needed,
+                    "plates": plates_needed,
+                    "var": var,
+                    "priority": rule["priority"],
+                }
+
+                start_vars[(sample_type, t, qty)] = var
+                all_options.append(option)
+
+    # --------------------------------------------------------
+    # Exact sample completion constraint
+    # --------------------------------------------------------
+
+    for sample_type, qty_required in active_samples.items():
+        model.Add(
+            sum(
+                opt["qty"] * opt["var"]
+                for opt in all_options
+                if opt["sample_type"] == sample_type
+            ) == qty_required
+        )
+
+    # --------------------------------------------------------
+    # Resource constraints per 5-minute slot
+    # --------------------------------------------------------
+
+    for slot in range(horizon):
+        model.Add(
+            sum(
+                opt["personnel"] * opt["var"]
+                for opt in all_options
+                if opt["start"] <= slot < opt["end"]
+            ) <= total_personnel
+        )
+
+        model.Add(
+            sum(
+                opt["plates"] * opt["var"]
+                for opt in all_options
+                if opt["start"] <= slot < opt["end"]
+            ) <= TOTAL_PLATES
+        )
+
+    # --------------------------------------------------------
+    # Completion time variables
+    # --------------------------------------------------------
+
+    makespan = model.NewIntVar(0, horizon, "makespan")
+
+    type_completion = {}
+
+    for sample_type in active_samples:
+        type_completion[sample_type] = model.NewIntVar(0, horizon, f"{sample_type}_completion")
+
+    for opt in all_options:
+        model.Add(makespan >= opt["end"]).OnlyEnforceIf(opt["var"])
+        model.Add(type_completion[opt["sample_type"]] >= opt["end"]).OnlyEnforceIf(opt["var"])
+
+    # --------------------------------------------------------
+    # Objective
+    # --------------------------------------------------------
+    # Main target:
+    #   minimize overall finish time
+    #
+    # Secondary target:
+    #   higher priority samples finish earlier
+    #
+    # Third target:
+    #   reduce unnecessary fragmentation/cycles
+    # --------------------------------------------------------
+
+    objective_terms = [makespan * 100000]
+
+    for sample_type, completion_var in type_completion.items():
+        priority = rules[sample_type]["priority"]
+        objective_terms.append(completion_var * priority * 1000)
+
+    objective_terms.append(sum(opt["var"] for opt in all_options))
+
+    model.Minimize(sum(objective_terms))
+
+    # --------------------------------------------------------
+    # Solve
+    # --------------------------------------------------------
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = max_seconds
+    solver.parameters.num_search_workers = 8
+
+    status = solver.Solve(model)
+
+    if status not in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
+        raise ValueError("Solver could not find a valid schedule.")
+
+    jobs = []
+
+    for opt in all_options:
+        if solver.Value(opt["var"]) == 1:
+            start = start_datetime + timedelta(minutes=opt["start"] * TIME_UNIT_MINUTES)
+            finish = start_datetime + timedelta(minutes=opt["end"] * TIME_UNIT_MINUTES)
+
+            jobs.append({
+                "Sample Type": opt["sample_type"],
+                "Processed Samples": opt["qty"],
+                "Personnel": opt["personnel"],
+                "Plates Needed": opt["plates"],
+                "Start": start,
+                "Finish": finish,
+                "Duration Minutes": opt["duration_units"] * TIME_UNIT_MINUTES,
+                "Priority": opt["priority"],
+            })
+
+    jobs = sorted(jobs, key=lambda x: (x["Start"], x["Priority"]))
+
+    return jobs
+
+
+# ============================================================
+# PHYSICAL PLATE ASSIGNMENT
+# ------------------------------------------------------------
+# OR-Tools optimizes plate count.
+# This function assigns actual Plate 1 to Plate 5 without overlap.
+# ============================================================
+
+def assign_physical_plates(jobs):
+    plate_available_time = {plate: datetime.min for plate in PLATE_IDS}
+    assigned_jobs = []
+
+    for job in sorted(jobs, key=lambda x: (x["Start"], x["Priority"])):
+        needed = job["Plates Needed"]
+        assigned = []
+
+        for plate in PLATE_IDS:
+            if plate_available_time[plate] <= job["Start"]:
+                assigned.append(plate)
+
+                if len(assigned) == needed:
+                    break
+
+        if len(assigned) < needed:
+            assigned = assigned + ["Unassigned"] * (needed - len(assigned))
+
+        for plate in assigned:
+            if plate != "Unassigned":
+                plate_available_time[plate] = job["Finish"]
+
+        new_job = dict(job)
+        new_job["Plates"] = ", ".join(assigned)
+        assigned_jobs.append(new_job)
+
+    return assigned_jobs
 
 
 # ============================================================
 # RUN APP
 # ============================================================
 
-if st.button("Generate Fast Schedule"):
-
+if st.button("Generate OR-Tools Optimized Schedule"):
     try:
-        jobs = fast_schedule(
+        jobs = solve_with_ortools(
             samples=samples,
             total_personnel=total_personnel,
-            start_time=start_datetime
+            start_datetime=start_datetime,
+            max_seconds=max_solver_seconds,
         )
 
-        if not jobs:
+        jobs = assign_physical_plates(jobs)
+
+        df = pd.DataFrame(jobs)
+
+        if df.empty:
             st.warning("No samples entered.")
         else:
-            df = pd.DataFrame(jobs)
-            df["Plates"] = df["Plates"].apply(lambda x: ", ".join(x))
             df = df.sort_values(["Start", "Priority"])
-
             final_finish = df["Finish"].max()
 
             st.success(
                 f"All samples completed by: {final_finish.strftime('%B %d, %Y %I:%M %p')}"
             )
 
-            st.subheader("Detailed Schedule")
+            st.subheader("Optimized Detailed Schedule")
 
             st.dataframe(
                 df[
@@ -317,10 +436,10 @@ if st.button("Generate Fast Schedule"):
                         "Plates",
                         "Start",
                         "Finish",
-                        "Duration Minutes"
+                        "Duration Minutes",
                     ]
                 ],
-                use_container_width=True
+                use_container_width=True,
             )
 
             st.subheader("Summary by Sample Type")
@@ -331,7 +450,7 @@ if st.button("Generate Fast Schedule"):
                     Total_Samples_Processed=("Processed Samples", "sum"),
                     First_Start=("Start", "min"),
                     Final_Finish=("Finish", "max"),
-                    Total_Cycles=("Sample Type", "count")
+                    Total_Cycles=("Sample Type", "count"),
                 )
                 .reset_index()
             )
@@ -349,14 +468,15 @@ if st.button("Generate Fast Schedule"):
                 x_end="Finish",
                 y="Task",
                 color="Sample Type",
-                text="Processed Samples"
+                text="Processed Samples",
             )
 
             fig.update_yaxes(autorange="reversed")
+
             fig.update_layout(
-                height=650,
+                height=700,
                 xaxis_title="Time",
-                yaxis_title="Processing Task"
+                yaxis_title="Processing Task",
             )
 
             st.plotly_chart(fig, use_container_width=True)
@@ -365,4 +485,4 @@ if st.button("Generate Fast Schedule"):
         st.error(f"Error: {e}")
 
 else:
-    st.info("Enter your sample data, then click Generate Fast Schedule.")
+    st.info("Enter your sample data, then click Generate OR-Tools Optimized Schedule.")
