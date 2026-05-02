@@ -518,7 +518,7 @@ if st.button("Generate Optimized Schedule"):
 
             st.plotly_chart(fig, use_container_width=True)
 
-                st.subheader("Drying Oven Gantt Chart")
+            st.subheader("Drying Oven Gantt Chart")
             drying_rows = []
             for _, row in drying_df.iterrows():
                 for i, oven in enumerate(row["Ovens"]):
