@@ -36,10 +36,10 @@ sorting_minutes = {
 
 # Drying rules
 drying_minutes = {
-    "Sublot": 240,
-    "Face": 180,
-    "Mine": 210,
-    "Lot Quality": 240,
+    "Sublot": 480,
+    "Face": 480,
+    "Mine": 480,
+    "Lot Quality": 480,
 }
 
 SHELVES_PER_OVEN = 8
@@ -341,28 +341,28 @@ def allocate_drying_jobs(reduction_jobs):
         duration = timedelta(minutes=drying_minutes[sample_type])
 
         current = finish_time
-        assigned_ovens = []
+        assigned_shelves = []
 
-        while not assigned_ovens:
+        while not assigned_shelves:
             available_ovens = ovens_available_at(current, window_start, window_end, ovens_high, ovens_low)
             oven_candidates = [f"Oven {i}" for i in range(1, available_ovens + 1)]
 
-            active = []
+            active_slots = []
             for dj in drying_jobs:
                 if not (current + duration <= dj["Start"] or current >= dj["Finish"]):
-                    active.extend(dj["Ovens"])
+                    active_slots.extend(dj["Shelf Allocations"])
 
-            free_ovens = [o for o in oven_candidates if active.count(o) < SHELVES_PER_OVEN]
+            free_slots = []
+            for oven in oven_candidates:
+                for shelf in range(1, SHELVES_PER_OVEN + 1):
+                    slot = f"{oven}-Shelf {shelf}"
+                    if slot not in active_slots:
+                        free_slots.append(slot)
 
-            for oven in free_ovens:
-                free_shelves = SHELVES_PER_OVEN - active.count(oven)
-                take = min(free_shelves, shelves_needed - len(assigned_ovens))
-                assigned_ovens.extend([oven] * take)
-                if len(assigned_ovens) >= shelves_needed:
-                    break
+            assigned_shelves = free_slots[:shelves_needed]
 
-            if len(assigned_ovens) < shelves_needed:
-                assigned_ovens = []
+            if len(assigned_shelves) < shelves_needed:
+                assigned_shelves = []
                 current += timedelta(minutes=TIME_UNIT)
 
         drying_jobs.append({
@@ -374,7 +374,7 @@ def allocate_drying_jobs(reduction_jobs):
             "Finish": current + duration,
             "Duration Minutes": drying_minutes[sample_type],
             "Shelves Needed": shelves_needed,
-            "Ovens": assigned_ovens,
+            "Shelf Allocations": assigned_shelves,
         })
 
     return drying_jobs
@@ -520,14 +520,18 @@ if st.button("Generate Optimized Schedule"):
 
             st.subheader("Drying Oven Gantt Chart")
             drying_rows = []
+            sample_short = {"Face": "FS", "Mine": "MS", "Sublot": "SS", "Lot Quality": "LQ"}
             for _, row in drying_df.iterrows():
-                for i, oven in enumerate(row["Ovens"]):
+                for slot in row["Shelf Allocations"]:
+                    oven_name, shelf_name = slot.split("-Shelf ")
+                    oven_num = oven_name.split(" ")[-1]
+                    label = f"{sample_short.get(row['Type'], row['Type'][:2].upper())} {oven_num}-{shelf_name}"
                     drying_rows.append({
-                        "Oven": oven,
+                        "Oven": oven_name,
                         "Task": row["Type"],
                         "Start": row["Start"],
                         "Finish": row["Finish"],
-                        "Label": f"{row['Type']} shelf {i + 1}",
+                        "Label": label,
                     })
 
             if drying_rows:
