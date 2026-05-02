@@ -329,12 +329,27 @@ def ovens_available_at(ts, start_t, end_t, high, low):
 
 def allocate_drying_jobs(reduction_jobs):
     drying_jobs = []
-    reduction_jobs_sorted = sorted(reduction_jobs, key=lambda x: (x["Finish"], x["Priority"]))
 
-    for job in reduction_jobs_sorted:
-        sample_type = job["Type"]
-        qty = job["Qty"]
-        finish_time = job["Finish"]
+    reduction_df = pd.DataFrame(reduction_jobs)
+    if reduction_df.empty:
+        return drying_jobs
+
+    batch_jobs = (
+        reduction_df.groupby("Type")
+        .agg(
+            Qty=("Qty", "sum"),
+            Priority=("Priority", "min"),
+            Reduction_Finish=("Finish", "max"),
+        )
+        .reset_index()
+        .sort_values(["Reduction_Finish", "Priority"])
+    )
+
+    for _, batch in batch_jobs.iterrows():
+        sample_type = batch["Type"]
+        qty = int(batch["Qty"])
+        finish_time = batch["Reduction_Finish"]
+        priority = int(batch["Priority"])
 
         shelf_capacity = drying_capacity_per_shelf[sample_type]
         shelves_needed = math.ceil(qty / shelf_capacity)
@@ -368,7 +383,7 @@ def allocate_drying_jobs(reduction_jobs):
         drying_jobs.append({
             "Type": sample_type,
             "Qty": qty,
-            "Priority": job["Priority"],
+            "Priority": priority,
             "Reduction Finish": finish_time,
             "Start": current,
             "Finish": current + duration,
@@ -451,8 +466,11 @@ if st.button("Generate Optimized Schedule"):
                 drying_summary = drying_df.groupby("Type").agg(
                     First_Drying_Start=("Start", "min"),
                     Final_Drying_Finish=("Finish", "max"),
-                    Total_Drying_Minutes=("Duration Minutes", "sum"),
                 ).reset_index()
+                drying_summary["Total_Drying_Minutes"] = (
+                    (drying_summary["Final_Drying_Finish"] - drying_summary["First_Drying_Start"])
+                    .dt.total_seconds() // 60
+                ).astype(int)
                 summary_df = summary_df.merge(drying_summary, on="Type", how="left")
 
             st.dataframe(summary_df, use_container_width=True)
