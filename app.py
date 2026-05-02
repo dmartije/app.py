@@ -289,27 +289,27 @@ if st.button("Generate Optimized Schedule"):
 
             gantt_rows = []
 
-for _, row in df.iterrows():
-    plates = row["Plate"].split(", ")
-    total_qty = row["Qty"]
-    plate_count = len(plates)
+            for _, row in df.iterrows():
+                plates = row["Plate"].split(", ")
+                total_qty = row["Qty"]
+                plate_count = len(plates)
 
-    # distribute samples across plates
-    base_qty = total_qty // plate_count
-    remainder = total_qty % plate_count
+                # distribute samples across plates
+                base_qty = total_qty // plate_count
+                remainder = total_qty % plate_count
 
-    for i, plate in enumerate(plates):
-        qty_on_plate = base_qty + (1 if i < remainder else 0)
+                for i, plate in enumerate(plates):
+                    qty_on_plate = base_qty + (1 if i < remainder else 0)
 
-        gantt_rows.append({
-            "Plate": plate,
-            "Task": row["Type"],
-            "Start": row["Start"],
-            "Finish": row["Finish"],
-            "Label": f"{row['Type']} ({qty_on_plate})",
-            "Cycle No.": row["Cycle No."],
-            "Personnel": row["Personnel"],
-        })
+                    gantt_rows.append({
+                        "Plate": plate,
+                        "Task": row["Type"],
+                        "Start": row["Start"],
+                        "Finish": row["Finish"],
+                        "Label": f"{row['Type']} ({qty_on_plate})",
+                        "Cycle No.": row["Cycle No."],
+                        "Personnel": row["Personnel"],
+                    })
 
             gantt_df = pd.DataFrame(gantt_rows)
 
