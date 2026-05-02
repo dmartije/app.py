@@ -4,16 +4,14 @@ from datetime import datetime, timedelta
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-
 from ortools.sat.python import cp_model
-
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-st.set_page_config(page_title="OR-Tools Scheduler", layout="wide")
-st.title("Sample Preparation Optimizer with Plate Gantt")
+st.set_page_config(page_title="Sample Scheduler", layout="wide")
+st.title("Sample Preparation Optimizer (OR-Tools + Plate Gantt)")
 
 TOTAL_PLATES = 5
 TIME_UNIT = 5
@@ -25,7 +23,6 @@ rules = {
     "Mine": {"priority": 3, "minutes": 10, "personnel": 3, "capacity": 2},
     "Lot Quality": {"priority": 4, "minutes": 15, "personnel": 1, "capacity": 1},
 }
-
 
 # ============================================================
 # INPUT
@@ -48,15 +45,13 @@ samples = {
 
 time_limit = st.sidebar.slider("Solver Time (sec)", 3, 60, 15)
 
-
 # ============================================================
 # SOLVER
 # ============================================================
 
 def solve(samples):
     model = cp_model.CpModel()
-
-    horizon = 200  # safe limit
+    horizon = 200
 
     jobs = []
 
@@ -93,7 +88,7 @@ def solve(samples):
                     "plates": pl,
                 })
 
-    # fulfill samples
+    # fulfill sample counts
     for s, qty in samples.items():
         if qty == 0:
             continue
@@ -117,6 +112,7 @@ def solve(samples):
 
     status = solver.Solve(model)
 
+    # Solver status
     if status == cp_model.OPTIMAL:
         status_text = "OPTIMAL"
     elif status == cp_model.FEASIBLE:
@@ -140,7 +136,6 @@ def solve(samples):
             })
 
     return result, status_text
-
 
 # ============================================================
 # ASSIGN PHYSICAL PLATES
@@ -169,7 +164,6 @@ def assign_plates(jobs):
 
     return out
 
-
 # ============================================================
 # RUN
 # ============================================================
@@ -181,7 +175,6 @@ if st.button("Generate Schedule"):
     st.info(f"Solver Status: {status}")
 
     jobs = assign_plates(jobs)
-
     df = pd.DataFrame(jobs)
 
     st.dataframe(df, use_container_width=True)
@@ -189,7 +182,7 @@ if st.button("Generate Schedule"):
     st.success(f"Finish Time: {df['Finish'].max()}")
 
     # ========================================================
-    # GANTT PER PLATE
+    # GANTT WITH LABELS + COLORS
     # ========================================================
 
     gantt = []
@@ -201,55 +194,31 @@ if st.button("Generate Schedule"):
                 "Plate": p,
                 "Task": r["Type"],
                 "Start": r["Start"],
-                "Finish": r["Finish"]
+                "Finish": r["Finish"],
+                "Label": f"{r['Type']} ({r['Qty']})"
             })
 
     gantt_df = pd.DataFrame(gantt)
 
-# Add label text (sample count)
-gantt = []
+    color_map = {
+        "Mine": "green",
+        "Sublot": "orange",
+        "Face": "blue",
+        "Lot Quality": "red"
+    }
 
-for _, r in df.iterrows():
-    plates = r["Plate"].split(", ")
-    for p in plates:
-        gantt.append({
-            "Plate": p,
-            "Task": r["Type"],
-            "Start": r["Start"],
-            "Finish": r["Finish"],
-            "Label": f"{r['Type']} ({r['Qty']})"  # <-- shows sample count
-        })
-
-gantt_df = pd.DataFrame(gantt)
-
-# Custom colors
-color_map = {
-    "Mine": "green",
-    "Sublot": "orange",
-    "Face": "blue",
-    "Lot Quality": "red"
-}
-
-fig = px.timeline(
-    gantt_df,
-    x_start="Start",
-    x_end="Finish",
-    y="Plate",
-    color="Task",
-    text="Label",  # <-- show label on bars
-    color_discrete_map=color_map
-)
-
-fig.update_yaxes(autorange="reversed")
-
-fig.update_traces(
-    textposition="inside",
-    textfont_size=12
-)
-
-st.plotly_chart(fig, use_container_width=True)
+    fig = px.timeline(
+        gantt_df,
+        x_start="Start",
+        x_end="Finish",
+        y="Plate",
+        color="Task",
+        text="Label",
+        color_discrete_map=color_map
+    )
 
     fig.update_yaxes(autorange="reversed")
+    fig.update_traces(textposition="inside", textfont_size=12)
 
     st.plotly_chart(fig, use_container_width=True)
 
