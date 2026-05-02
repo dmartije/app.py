@@ -274,7 +274,7 @@ if st.button("Generate Optimized Schedule"):
                     Final_Finish=("Finish", "max"),
                     Total_Cycles=("Cycle No.", "max"),
                     Total_Duration_Minutes=("Duration Minutes", "sum"),
-                    Total_Personnel_Allocated=("Personnel", "sum"),
+                    Max_Personnel_Used_At_One_Time=("Personnel", "max"),
                 )
                 .reset_index()
             )
