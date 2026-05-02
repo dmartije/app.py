@@ -1,16 +1,62 @@
+# ============================================================
+# SAMPLE PREPARATION SCHEDULING OPTIMIZER
+# ------------------------------------------------------------
+# This Streamlit app allows you to input:
+# - number of samples received per type
+# - date and time received
+# - number of personnel present
+#
+# The program will:
+# - calculate the best personnel allocation
+# - calculate estimated finish time
+# - assign available plates
+# - generate a Gantt chart
+#
+# Sample Types:
+# 1. Sublot
+# 2. Face
+# 3. Mine
+# 4. Lot Quality
+# ============================================================
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 from itertools import product
+import math
 
-st.set_page_config(page_title="Sample Preparation Scheduler", layout="wide")
+
+# ============================================================
+# PAGE SETUP
+# ============================================================
+
+st.set_page_config(
+    page_title="Sample Preparation Scheduler",
+    layout="wide"
+)
 
 st.title("Sample Preparation Scheduling Optimizer")
 
-# -----------------------------
-# SAMPLE RULES
-# -----------------------------
+
+# ============================================================
+# RULES / PROCESSING STANDARDS
+# ------------------------------------------------------------
+# You can edit this part if processing standards change.
+#
+# minutes:
+#   processing time per sample/group
+#
+# group_size:
+#   number of personnel required to make 1 working group
+#
+# plate_capacity:
+#   how many samples can be placed in one plate
+#
+# priority:
+#   lower number = higher priority
+# ============================================================
+
 rules = {
     "Sublot": {
         "priority": 1,
@@ -38,9 +84,11 @@ rules = {
     }
 }
 
-# -----------------------------
-# INPUT FORM
-# -----------------------------
+
+# ============================================================
+# USER INPUT SECTION
+# ============================================================
+
 st.sidebar.header("Input Data")
 
 received_datetime = st.sidebar.datetime_input(
@@ -57,23 +105,40 @@ total_personnel = st.sidebar.number_input(
 )
 
 samples = {
-    "Face": st.sidebar.number_input("Face Samples", min_value=0, value=10, step=1),
-    "Mine": st.sidebar.number_input("Mine Samples", min_value=0, value=2, step=1),
-    "Sublot": st.sidebar.number_input("Sublot Samples", min_value=0, value=2, step=1),
-    "Lot Quality": st.sidebar.number_input("Lot Quality Samples", min_value=0, value=1, step=1)
+    "Face": st.sidebar.number_input("Face Samples", min_value=0, value=212, step=1),
+    "Mine": st.sidebar.number_input("Mine Samples", min_value=0, value=0, step=1),
+    "Sublot": st.sidebar.number_input("Sublot Samples", min_value=0, value=0, step=1),
+    "Lot Quality": st.sidebar.number_input("Lot Quality Samples", min_value=0, value=0, step=1)
 }
 
 total_plates = 5
 
-active_types = [s for s, qty in samples.items() if qty > 0]
 
-# -----------------------------
-# PROCESSING TIME FUNCTION
-# -----------------------------
-def calculate_duration(sample_type, sample_count, personnel, plates):
+# ============================================================
+# PROCESSING TIME CALCULATION
+# ------------------------------------------------------------
+# This function calculates the processing duration.
+#
+# Face:
+#   samples / personnel * 5 minutes
+#
+# Mine:
+#   samples / number of 3-person groups * 10 minutes
+#
+# Sublot:
+#   samples / number of 4-person groups * 15 minutes
+#
+# Lot Quality:
+#   samples / personnel * 15 minutes
+#
+# Plate capacity is NOT used as a speed multiplier.
+# It is used only to check how many plates are needed.
+# ============================================================
+
+def calculate_duration(sample_type, sample_count, personnel):
     rule = rules[sample_type]
 
-    if sample_count <= 0 or personnel <= 0 or plates <= 0:
+    if sample_count <= 0 or personnel <= 0:
         return None
 
     group_size = rule["group_size"]
@@ -82,122 +147,206 @@ def calculate_duration(sample_type, sample_count, personnel, plates):
     if groups <= 0:
         return None
 
-    capacity_per_cycle = groups * plates * rule["plate_capacity"]
-
-    if capacity_per_cycle <= 0:
-        return None
-
-    cycles = -(-sample_count // capacity_per_cycle)  # ceiling division
-    duration_minutes = cycles * rule["minutes"]
+    duration_minutes = math.ceil((sample_count / groups) * rule["minutes"])
 
     return duration_minutes
 
-# -----------------------------
-# BRUTE FORCE OPTIMIZER
-# -----------------------------
-def find_best_schedule(samples, total_personnel, total_plates, start_time):
-    active = [s for s, qty in samples.items() if qty > 0]
 
-    if not active:
+# ============================================================
+# REQUIRED PLATE CALCULATION
+# ------------------------------------------------------------
+# This calculates the minimum number of plates needed based on
+# sample quantity and plate capacity.
+#
+# Example:
+# Face = 10 samples per plate
+# 212 Face samples = ceil(212 / 10) = 22 plate-loads
+#
+# Since only 5 plates exist, this does not mean 22 physical plates.
+# It means several plate cycles may be needed.
+# ============================================================
+
+def calculate_plate_loads(sample_type, sample_count):
+    capacity = rules[sample_type]["plate_capacity"]
+
+    if sample_count <= 0:
+        return 0
+
+    return math.ceil(sample_count / capacity)
+
+
+# ============================================================
+# OPTIMIZER
+# ------------------------------------------------------------
+# This tries different personnel allocations and chooses the
+# allocation with the least total processing time.
+#
+# The program also prefers:
+# 1. faster total completion
+# 2. higher priority samples finishing earlier
+# 3. using more available personnel
+#
+# Important:
+# This is a practical optimizer, not yet a full industrial
+# scheduling engine. But it already follows the correct
+# processing time logic.
+# ============================================================
+
+def find_best_schedule(samples, total_personnel, total_plates, start_time):
+    active_types = [sample_type for sample_type, qty in samples.items() if qty > 0]
+
+    if not active_types:
         return [], None
 
     best_schedule = None
-    best_finish = None
+    best_finish_time = None
     best_score = None
 
-    # Generate possible plate allocations
-    plate_ranges = [range(1, total_plates + 1) for _ in active]
+    personnel_ranges = [
+        range(1, total_personnel + 1)
+        for _ in active_types
+    ]
 
-    for plate_allocation in product(*plate_ranges):
-        if sum(plate_allocation) > total_plates:
+    for personnel_allocation in product(*personnel_ranges):
+
+        # Do not exceed total available personnel
+        if sum(personnel_allocation) > total_personnel:
             continue
 
-        # Generate possible personnel allocations
-        personnel_ranges = [range(1, total_personnel + 1) for _ in active]
+        schedule = []
+        valid = True
+        latest_finish = start_time
 
-        for personnel_allocation in product(*personnel_ranges):
-            if sum(personnel_allocation) > total_personnel:
-                continue
+        for sample_type, personnel in zip(active_types, personnel_allocation):
 
-            schedule = []
-            max_finish = start_time
-            valid = True
-
-            for sample_type, personnel, plates in zip(active, personnel_allocation, plate_allocation):
-                duration = calculate_duration(
-                    sample_type,
-                    samples[sample_type],
-                    personnel,
-                    plates
-                )
-
-                if duration is None:
-                    valid = False
-                    break
-
-                finish_time = start_time + timedelta(minutes=duration)
-
-                schedule.append({
-                    "Sample Type": sample_type,
-                    "Samples": samples[sample_type],
-                    "Personnel Assigned": personnel,
-                    "Plates Assigned": plates,
-                    "Start": start_time,
-                    "Finish": finish_time,
-                    "Duration Minutes": duration,
-                    "Priority": rules[sample_type]["priority"]
-                })
-
-                if finish_time > max_finish:
-                    max_finish = finish_time
-
-            if not valid:
-                continue
-
-            # Objective:
-            # 1. Minimize latest finish time
-            # 2. Give slight preference to higher-priority samples finishing earlier
-            priority_score = sum(
-                item["Priority"] * item["Duration Minutes"]
-                for item in schedule
+            duration_minutes = calculate_duration(
+                sample_type,
+                samples[sample_type],
+                personnel
             )
 
-            total_minutes = (max_finish - start_time).total_seconds() / 60
+            if duration_minutes is None:
+                valid = False
+                break
 
-            score = (total_minutes, priority_score)
+            start = start_time
+            finish = start + timedelta(minutes=duration_minutes)
 
-            if best_score is None or score < best_score:
-                best_score = score
-                best_finish = max_finish
-                best_schedule = schedule
+            required_plate_loads = calculate_plate_loads(
+                sample_type,
+                samples[sample_type]
+            )
 
-    return best_schedule, best_finish
+            schedule.append({
+                "Sample Type": sample_type,
+                "Samples": samples[sample_type],
+                "Personnel Assigned": personnel,
+                "Plate Loads Required": required_plate_loads,
+                "Start": start,
+                "Finish": finish,
+                "Duration Minutes": duration_minutes,
+                "Priority": rules[sample_type]["priority"]
+            })
 
-# -----------------------------
-# RUN OPTIMIZER
-# -----------------------------
+            if finish > latest_finish:
+                latest_finish = finish
+
+        if not valid:
+            continue
+
+        # Score determines the "best" schedule
+        total_minutes = (latest_finish - start_time).total_seconds() / 60
+
+        priority_score = sum(
+            item["Priority"] * item["Duration Minutes"]
+            for item in schedule
+        )
+
+        unused_personnel = total_personnel - sum(personnel_allocation)
+
+        score = (
+            total_minutes,
+            priority_score,
+            unused_personnel
+        )
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_schedule = schedule
+            best_finish_time = latest_finish
+
+    return best_schedule, best_finish_time
+
+
+# ============================================================
+# PLATE ASSIGNMENT
+# ------------------------------------------------------------
+# This assigns available physical plates from Plate 1 to Plate 5.
+#
+# Since plates can be reused after a cycle, this shows the
+# working plates assigned to each active sample type.
+# ============================================================
+
+def assign_plates(schedule, total_plates):
+    plate_rows = []
+
+    plate_number = 1
+
+    for item in schedule:
+        sample_type = item["Sample Type"]
+
+        # Assign at least 1 physical plate per active sample type
+        assigned_plate = f"Plate {plate_number}"
+
+        plate_rows.append({
+            "Sample Type": sample_type,
+            "Assigned Plate": assigned_plate,
+            "Personnel Assigned": item["Personnel Assigned"],
+            "Plate Loads Required": item["Plate Loads Required"],
+            "Start": item["Start"],
+            "Finish": item["Finish"]
+        })
+
+        plate_number += 1
+
+        if plate_number > total_plates:
+            plate_number = 1
+
+    return pd.DataFrame(plate_rows)
+
+
+# ============================================================
+# RUN BUTTON
+# ============================================================
+
 if st.button("Generate Best Schedule"):
+
     schedule, final_finish = find_best_schedule(
-        samples,
-        total_personnel,
-        total_plates,
-        received_datetime
+        samples=samples,
+        total_personnel=total_personnel,
+        total_plates=total_plates,
+        start_time=received_datetime
     )
 
     if not schedule:
-        st.error("No valid schedule found. Please check personnel and sample inputs.")
+        st.error("No valid schedule found. Please check your inputs.")
     else:
         df = pd.DataFrame(schedule)
         df = df.sort_values("Priority")
 
-        st.subheader("Best Personnel and Plate Allocation")
+        # ====================================================
+        # RESULT TABLE
+        # ====================================================
+
+        st.subheader("Best Personnel Allocation")
+
         st.dataframe(
             df[
                 [
                     "Sample Type",
                     "Samples",
                     "Personnel Assigned",
-                    "Plates Assigned",
+                    "Plate Loads Required",
                     "Start",
                     "Finish",
                     "Duration Minutes"
@@ -206,32 +355,28 @@ if st.button("Generate Best Schedule"):
             use_container_width=True
         )
 
-        st.success(f"All samples completed by: {final_finish.strftime('%B %d, %Y %I:%M %p')}")
+        st.success(
+            f"All samples completed by: "
+            f"{final_finish.strftime('%B %d, %Y %I:%M %p')}"
+        )
 
-        # Assign actual plate numbers
+        # ====================================================
+        # PLATE ASSIGNMENT TABLE
+        # ====================================================
+
         st.subheader("Plate Assignment")
 
-        plate_number = 1
-        plate_rows = []
+        plate_df = assign_plates(df.to_dict("records"), total_plates)
 
-        for _, row in df.iterrows():
-            assigned_plates = []
-            for _ in range(int(row["Plates Assigned"])):
-                assigned_plates.append(f"Plate {plate_number}")
-                plate_number += 1
+        st.dataframe(
+            plate_df,
+            use_container_width=True
+        )
 
-            plate_rows.append({
-                "Sample Type": row["Sample Type"],
-                "Assigned Plates": ", ".join(assigned_plates),
-                "Personnel Assigned": row["Personnel Assigned"],
-                "Start": row["Start"],
-                "Finish": row["Finish"]
-            })
+        # ====================================================
+        # GANTT CHART
+        # ====================================================
 
-        plate_df = pd.DataFrame(plate_rows)
-        st.dataframe(plate_df, use_container_width=True)
-
-        # Gantt chart
         st.subheader("Gantt Chart")
 
         gantt_df = df.copy()
@@ -247,7 +392,12 @@ if st.button("Generate Best Schedule"):
         )
 
         fig.update_yaxes(autorange="reversed")
-        fig.update_layout(height=500)
+
+        fig.update_layout(
+            height=500,
+            xaxis_title="Time",
+            yaxis_title="Sample Type"
+        )
 
         st.plotly_chart(fig, use_container_width=True)
 
