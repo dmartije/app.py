@@ -9,31 +9,21 @@ from ortools.sat.python import cp_model
 
 
 # ============================================================
-# PAGE SETUP
+# CONFIG
 # ============================================================
 
-st.set_page_config(page_title="Sample Prep Turn-Around-Time Optimization ", layout="wide")
-st.title("OR-Tools Sample Preparation Optimizer")
-
-
-# ============================================================
-# CONSTANTS
-# ============================================================
+st.set_page_config(page_title="OR-Tools Scheduler", layout="wide")
+st.title("Sample Preparation Optimizer with Plate Gantt")
 
 TOTAL_PLATES = 5
-TIME_UNIT_MINUTES = 5
-PLATE_IDS = [f"Plate {i}" for i in range(1, TOTAL_PLATES + 1)]
-
-
-# ============================================================
-# PROCESS RULES
-# ============================================================
+TIME_UNIT = 5
+PLATES = [f"Plate {i}" for i in range(1, TOTAL_PLATES + 1)]
 
 rules = {
-    "Sublot": {"priority": 1, "minutes_per_cycle": 15, "personnel_per_sample": 4, "plate_capacity": 1},
-    "Face": {"priority": 2, "minutes_per_cycle": 5, "personnel_per_sample": 1, "plate_capacity": 10},
-    "Mine": {"priority": 3, "minutes_per_cycle": 10, "personnel_per_sample": 3, "plate_capacity": 2},
-    "Lot Quality": {"priority": 4, "minutes_per_cycle": 15, "personnel_per_sample": 1, "plate_capacity": 1},
+    "Sublot": {"priority": 1, "minutes": 15, "personnel": 4, "capacity": 1},
+    "Face": {"priority": 2, "minutes": 5, "personnel": 1, "capacity": 10},
+    "Mine": {"priority": 3, "minutes": 10, "personnel": 3, "capacity": 2},
+    "Lot Quality": {"priority": 4, "minutes": 15, "personnel": 1, "capacity": 1},
 }
 
 
@@ -41,197 +31,192 @@ rules = {
 # INPUT
 # ============================================================
 
-st.sidebar.header("Input Data")
+st.sidebar.header("Input")
 
-start_datetime = st.sidebar.datetime_input(
-    "Date and Time Received",
-    value=datetime(2026, 5, 2, 8, 0)
+start_time = st.sidebar.datetime_input(
+    "Start Time", value=datetime(2026, 5, 2, 8, 0)
 )
 
-total_personnel = st.sidebar.number_input(
-    "Personnel Present",
-    min_value=1,
-    max_value=100,
-    value=20
-)
+personnel_total = st.sidebar.number_input("Personnel", 1, 100, 20)
 
 samples = {
-    "Face": st.sidebar.number_input("Face Samples", min_value=0, value=100),
-    "Mine": st.sidebar.number_input("Mine Samples", min_value=0, value=15),
-    "Sublot": st.sidebar.number_input("Sublot Samples", min_value=0, value=3),
-    "Lot Quality": st.sidebar.number_input("Lot Quality Samples", min_value=0, value=1),
+    "Face": st.sidebar.number_input("Face", 0, 500, 100),
+    "Mine": st.sidebar.number_input("Mine", 0, 500, 15),
+    "Sublot": st.sidebar.number_input("Sublot", 0, 100, 3),
+    "Lot Quality": st.sidebar.number_input("Lot Quality", 0, 100, 1),
 }
 
-solver_time = st.sidebar.slider("Solver Time Limit (seconds)", 3, 60, 15)
-
-
-# ============================================================
-# GREEDY UPPER BOUND (for horizon)
-# ============================================================
-
-def fast_upper_bound(samples):
-    total_minutes = 0
-    for s, qty in samples.items():
-        if qty == 0:
-            continue
-        rule = rules[s]
-        capacity = min(
-            TOTAL_PLATES * rule["plate_capacity"],
-            total_personnel // rule["personnel_per_sample"]
-        )
-        cycles = math.ceil(qty / capacity)
-        total_minutes += cycles * rule["minutes_per_cycle"]
-    return max(1, total_minutes // TIME_UNIT_MINUTES)
+time_limit = st.sidebar.slider("Solver Time (sec)", 3, 60, 15)
 
 
 # ============================================================
 # SOLVER
 # ============================================================
 
-def solve_model(samples):
+def solve(samples):
     model = cp_model.CpModel()
 
-    horizon = fast_upper_bound(samples)
+    horizon = 200  # safe limit
 
-    variables = []
-    all_jobs = []
+    jobs = []
 
     for s, qty in samples.items():
         if qty == 0:
             continue
 
-        rule = rules[s]
-        duration = rule["minutes_per_cycle"] // TIME_UNIT_MINUTES
+        r = rules[s]
+        dur = r["minutes"] // TIME_UNIT
 
-        max_qty = min(
+        max_batch = min(
             qty,
-            TOTAL_PLATES * rule["plate_capacity"],
-            total_personnel // rule["personnel_per_sample"]
+            personnel_total // r["personnel"],
+            TOTAL_PLATES * r["capacity"],
         )
 
         for t in range(horizon):
-            for q in range(1, max_qty + 1):
+            for q in range(1, max_batch + 1):
+                p = q * r["personnel"]
+                pl = math.ceil(q / r["capacity"])
 
-                personnel = q * rule["personnel_per_sample"]
-                plates = math.ceil(q / rule["plate_capacity"])
-
-                if personnel > total_personnel or plates > TOTAL_PLATES:
+                if p > personnel_total or pl > TOTAL_PLATES:
                     continue
 
-                var = model.NewBoolVar(f"{s}_{t}_{q}")
+                v = model.NewBoolVar(f"{s}_{t}_{q}")
 
-                variables.append(var)
-
-                all_jobs.append({
-                    "var": var,
-                    "sample": s,
+                jobs.append({
+                    "var": v,
+                    "type": s,
                     "start": t,
-                    "end": t + duration,
+                    "end": t + dur,
                     "qty": q,
-                    "personnel": personnel,
-                    "plates": plates,
-                    "priority": rule["priority"]
+                    "personnel": p,
+                    "plates": pl,
                 })
 
-    # sample completion constraint
+    # fulfill samples
     for s, qty in samples.items():
         if qty == 0:
             continue
 
-        model.Add(
-            sum(j["qty"] * j["var"] for j in all_jobs if j["sample"] == s) == qty
-        )
+        model.Add(sum(j["qty"] * j["var"] for j in jobs if j["type"] == s) == qty)
 
     # resource constraints
     for t in range(horizon):
-        model.Add(
-            sum(j["personnel"] * j["var"] for j in all_jobs if j["start"] <= t < j["end"])
-            <= total_personnel
-        )
+        model.Add(sum(j["personnel"] * j["var"] for j in jobs if j["start"] <= t < j["end"]) <= personnel_total)
+        model.Add(sum(j["plates"] * j["var"] for j in jobs if j["start"] <= t < j["end"]) <= TOTAL_PLATES)
 
-        model.Add(
-            sum(j["plates"] * j["var"] for j in all_jobs if j["start"] <= t < j["end"])
-            <= TOTAL_PLATES
-        )
-
-    # objective
     makespan = model.NewIntVar(0, horizon, "makespan")
 
-    for j in all_jobs:
+    for j in jobs:
         model.Add(makespan >= j["end"]).OnlyEnforceIf(j["var"])
 
     model.Minimize(makespan)
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = solver_time
+    solver.parameters.max_time_in_seconds = time_limit
 
     status = solver.Solve(model)
 
-    # =========================
-    # SOLVER STATUS INDICATOR
-    # =========================
     if status == cp_model.OPTIMAL:
-        solver_status = "OPTIMAL"
-        solver_msg = "✅ Optimal solution found."
+        status_text = "OPTIMAL"
     elif status == cp_model.FEASIBLE:
-        solver_status = "FEASIBLE"
-        solver_msg = "⚠️ Feasible solution (not guaranteed optimal)."
+        status_text = "FEASIBLE"
     else:
-        raise ValueError("No solution found.")
+        raise ValueError("No solution")
 
-    # extract solution
-    jobs = []
-    for j in all_jobs:
+    result = []
+    for j in jobs:
         if solver.Value(j["var"]) == 1:
-            start = start_datetime + timedelta(minutes=j["start"] * TIME_UNIT_MINUTES)
-            finish = start_datetime + timedelta(minutes=j["end"] * TIME_UNIT_MINUTES)
+            stime = start_time + timedelta(minutes=j["start"] * TIME_UNIT)
+            ftime = start_time + timedelta(minutes=j["end"] * TIME_UNIT)
 
-            jobs.append({
-                "Sample Type": j["sample"],
-                "Processed Samples": j["qty"],
+            result.append({
+                "Type": j["type"],
+                "Qty": j["qty"],
                 "Personnel": j["personnel"],
-                "Plates Needed": j["plates"],
-                "Start": start,
-                "Finish": finish
+                "PlatesNeeded": j["plates"],
+                "Start": stime,
+                "Finish": ftime
             })
 
-    return jobs, solver_status, solver_msg
+    return result, status_text
+
+
+# ============================================================
+# ASSIGN PHYSICAL PLATES
+# ============================================================
+
+def assign_plates(jobs):
+    plate_free = {p: start_time for p in PLATES}
+    out = []
+
+    for j in sorted(jobs, key=lambda x: x["Start"]):
+        needed = j["PlatesNeeded"]
+        assigned = []
+
+        for p in PLATES:
+            if plate_free[p] <= j["Start"]:
+                assigned.append(p)
+                if len(assigned) == needed:
+                    break
+
+        for p in assigned:
+            plate_free[p] = j["Finish"]
+
+        j2 = j.copy()
+        j2["Plate"] = ", ".join(assigned)
+        out.append(j2)
+
+    return out
 
 
 # ============================================================
 # RUN
 # ============================================================
 
-if st.button("Generate Optimized Schedule"):
+if st.button("Generate Schedule"):
 
-    try:
-        jobs, solver_status, solver_msg = solve_model(samples)
+    jobs, status = solve(samples)
 
-        df = pd.DataFrame(jobs)
+    st.info(f"Solver Status: {status}")
 
-        st.info(f"Solver Status: {solver_status}")
-        st.write(solver_msg)
+    jobs = assign_plates(jobs)
 
-        final_finish = df["Finish"].max()
+    df = pd.DataFrame(jobs)
 
-        st.success(f"All samples completed by: {final_finish}")
+    st.dataframe(df, use_container_width=True)
 
-        st.dataframe(df, use_container_width=True)
+    st.success(f"Finish Time: {df['Finish'].max()}")
 
-        fig = px.timeline(
-            df,
-            x_start="Start",
-            x_end="Finish",
-            y="Sample Type",
-            color="Sample Type",
-            text="Processed Samples"
-        )
+    # ========================================================
+    # GANTT PER PLATE
+    # ========================================================
 
-        fig.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig, use_container_width=True)
+    gantt = []
 
-    except Exception as e:
-        st.error(str(e))
+    for _, r in df.iterrows():
+        plates = r["Plate"].split(", ")
+        for p in plates:
+            gantt.append({
+                "Plate": p,
+                "Task": r["Type"],
+                "Start": r["Start"],
+                "Finish": r["Finish"]
+            })
+
+    gantt_df = pd.DataFrame(gantt)
+
+    fig = px.timeline(
+        gantt_df,
+        x_start="Start",
+        x_end="Finish",
+        y="Plate",
+        color="Task"
+    )
+
+    fig.update_yaxes(autorange="reversed")
+
+    st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("Enter inputs and click Generate.")
+    st.info("Enter inputs then click Generate")
