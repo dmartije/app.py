@@ -9,9 +9,9 @@ import plotly.express as px
 import streamlit as st
 
 st.set_page_config(page_title="Sample Scheduler", layout="wide")
-st.title("Sample Workflow Optimizer")
+st.title("Sample Preparation Optimizer")
 PH_TZ = ZoneInfo("Asia/Manila")
-ph_now = pd.Timestamp(datetime.now(PH_TZ))
+ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
 st.caption(f"Current Philippine Time: {ph_now.strftime('%Y-%m-%d %I:%M:%S %p')}")
 
 # Global scheduling constraints.
