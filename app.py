@@ -64,13 +64,6 @@ pulverizing_minutes_per_sample = {
     "Lot Quality": 15,
 }
 
-sieving_minutes_per_sample = {
-    "Face": 6,
-    "Mine": 8,
-    "Sublot": 10,
-    "Lot Quality": 15,
-}
-
 
 # ============================================================
 # INPUT
@@ -115,7 +108,6 @@ ovens_high = st.sidebar.selectbox("Ovens operating during higher-capacity window
 ovens_low = st.sidebar.selectbox("Ovens operating outside that window", [1, 2], index=0)
 max_face_drying_batch = st.sidebar.number_input("Max Face drying transfer batch", min_value=1, max_value=1000, value=150)
 pulverizer_count = st.sidebar.selectbox("Pulverizers operating", [1, 2], index=1)
-siever_count = st.sidebar.selectbox("Sieving stations operating", [1, 2], index=1)
 
 
 # ============================================================
@@ -542,47 +534,7 @@ def allocate_pulverizing_jobs(crushing_jobs):
     return pulverizing_jobs
 
 
-def allocate_sieving_jobs(pulverizing_jobs):
-    sieving_jobs = []
-    if not pulverizing_jobs:
-        return sieving_jobs
 
-    station_free = {f"Sieve {i}": receipt_time for i in range(1, int(siever_count) + 1)}
-
-    for batch in sorted(pulverizing_jobs, key=lambda x: (x["Finish"], x["Priority"])):
-        sample_type = batch["Type"]
-        qty = int(batch["Qty"])
-        ready_time = batch["Finish"]
-        mins_per_sample = sieving_minutes_per_sample[sample_type]
-
-        machines = list(station_free.keys())
-        q_base = qty // len(machines)
-        q_rem = qty % len(machines)
-
-        for i, machine in enumerate(sorted(machines, key=lambda m: station_free[m])):
-            q_machine = q_base + (1 if i < q_rem else 0)
-            if q_machine <= 0:
-                continue
-
-            start = max(ready_time, station_free[machine])
-            duration = math.ceil(q_machine * mins_per_sample)
-            finish = start + timedelta(minutes=duration)
-            station_free[machine] = finish
-
-            sieving_jobs.append({
-                "Type": sample_type,
-                "Batch No": batch.get("Batch No", 1),
-                "Qty": q_machine,
-                "Priority": batch["Priority"],
-                "Pulverizing Finish": ready_time,
-                "Machine": machine,
-                "Start": start,
-                "Finish": finish,
-                "Duration Minutes": duration,
-            })
-
-    return sieving_jobs
-    
 # ============================================================
 # RUN APP
 # ============================================================
@@ -633,19 +585,15 @@ if st.button("Generate Optimized Schedule"):
             crushing_df = pd.DataFrame(crushing_jobs)
             pulverizing_jobs = allocate_pulverizing_jobs(crushing_jobs)
             pulverizing_df = pd.DataFrame(pulverizing_jobs)
-            sieving_jobs = allocate_sieving_jobs(pulverizing_jobs)
-            sieving_df = pd.DataFrame(sieving_jobs)
 
             final_reduction_finish = df["Finish"].max()
             final_drying_finish = drying_df["Finish"].max() if not drying_df.empty else final_reduction_finish
             final_crushing_finish = crushing_df["Finish"].max() if not crushing_df.empty else final_drying_finish
             final_pulverizing_finish = pulverizing_df["Finish"].max() if not pulverizing_df.empty else final_crushing_finish
-            final_sieving_finish = sieving_df["Finish"].max() if not sieving_df.empty else final_pulverizing_finish
             st.success(f"Reduction completed by: {final_reduction_finish}")
             st.success(f"Sorting + Reduction + Drying completed by: {final_drying_finish}")
             st.success(f"Sorting + Reduction + Drying + Crushing completed by: {final_crushing_finish}")
-            st.success(f"Sorting + Reduction + Drying + Crushing + Pulverizing completed by: {final_pulverizing_finish}")
-            st.success(f"Sorting + Reduction + Drying + Crushing + Pulverizing + Sieving completed by: {final_sieving_finish}")
+            st.success(f"Sorting + Reduction + Drying + Crushing + Pulverizing & Sieving completed by: {final_pulverizing_finish}")
             
             st.subheader("Summary by Sample Type")
 
@@ -692,25 +640,14 @@ if st.button("Generate Optimized Schedule"):
 
             if not pulverizing_df.empty:
                 pulverizing_summary = pulverizing_df.groupby("Type").agg(
-                    First_Pulverizing_Start=("Start", "min"),
-                    Final_Pulverizing_Finish=("Finish", "max"),
+                    First_PulvSieving_Start=("Start", "min"),
+                    Final_PulvSieving_Finish=("Finish", "max"),
                 ).reset_index()
-                pulverizing_summary["Total_Pulverizing_Minutes"] = (
-                    (pulverizing_summary["Final_Pulverizing_Finish"] - pulverizing_summary["First_Pulverizing_Start"])
+                pulverizing_summary["Total_PulvSieving_Minutes"] = (
+                    (pulverizing_summary["Final_PulvSieving_Finish"] - pulverizing_summary["First_PulvSieving_Start"])
                     .dt.total_seconds().div(60).round().astype(int)
                 )
                 summary_df = summary_df.merge(pulverizing_summary, on="Type", how="left")
-
-            if not sieving_df.empty:
-                sieving_summary = sieving_df.groupby("Type").agg(
-                    First_Sieving_Start=("Start", "min"),
-                    Final_Sieving_Finish=("Finish", "max"),
-                ).reset_index()
-                sieving_summary["Total_Sieving_Minutes"] = (
-                    (sieving_summary["Final_Sieving_Finish"] - sieving_summary["First_Sieving_Start"])
-                    .dt.total_seconds().div(60).round().astype(int)
-                )
-                summary_df = summary_df.merge(sieving_summary, on="Type", how="left")
 
             st.dataframe(summary_df, use_container_width=True)
 
@@ -738,11 +675,7 @@ if st.button("Generate Optimized Schedule"):
 
                 prows = pulverizing_df[pulverizing_df["Type"] == sample_type]
                 if not prows.empty:
-                    overall_rows.append({"Type": sample_type, "Step": "Pulverizing", "Start": prows["Start"].min(), "Finish": prows["Finish"].max()})
-
-                srows = sieving_df[sieving_df["Type"] == sample_type]
-                if not srows.empty:
-                    overall_rows.append({"Type": sample_type, "Step": "Sieving", "Start": srows["Start"].min(), "Finish": srows["Finish"].max()})
+                    overall_rows.append({"Type": sample_type, "Step": "Pulverizing & Sieving", "Start": prows["Start"].min(), "Finish": prows["Finish"].max()})
 
             if overall_rows:
                 overall_df = pd.DataFrame(overall_rows)
@@ -750,7 +683,7 @@ if st.button("Generate Optimized Schedule"):
                 fig_overall.update_yaxes(autorange="reversed")
                 fig_overall.update_layout(height=500, xaxis_title="Time", yaxis_title="Sample Type")
                 st.plotly_chart(fig_overall, use_container_width=True)
-            
+                
             st.subheader("Plate Gantt Chart")
 
             gantt_rows = []
@@ -864,7 +797,7 @@ if st.button("Generate Optimized Schedule"):
                 fig_crush.update_layout(height=500, xaxis_title="Time", yaxis_title="Crushing Allocation")
                 st.plotly_chart(fig_crush, use_container_width=True)
 
-            st.subheader("Pulverizing Gantt Chart")
+            st.subheader("Pulverizing & Sieving Gantt Chart")
             if not pulverizing_df.empty:
                 fig_pulv = px.timeline(
                     pulverizing_df,
@@ -877,24 +810,8 @@ if st.button("Generate Optimized Schedule"):
                     hover_data={"Batch No": True, "Crushing Finish": True}
                 )
                 fig_pulv.update_yaxes(autorange="reversed")
-                fig_pulv.update_layout(height=450, xaxis_title="Time", yaxis_title="Pulverizer")
+                fig_pulv.update_layout(height=450, xaxis_title="Time", yaxis_title="Pulverizer / Sieving Station")
                 st.plotly_chart(fig_pulv, use_container_width=True)
-
-            st.subheader("Sieving Gantt Chart")
-            if not sieving_df.empty:
-                fig_sieve = px.timeline(
-                    sieving_df,
-                    x_start="Start",
-                    x_end="Finish",
-                    y="Machine",
-                    color="Type",
-                    text="Qty",
-                    color_discrete_map=color_map,
-                    hover_data={"Batch No": True, "Pulverizing Finish": True}
-                )
-                fig_sieve.update_yaxes(autorange="reversed")
-                fig_sieve.update_layout(height=450, xaxis_title="Time", yaxis_title="Sieving Station")
-                st.plotly_chart(fig_sieve, use_container_width=True)
                 
     except Exception as e:
         st.error(f"Error: {e}")
