@@ -9,7 +9,7 @@ import plotly.express as px
 import streamlit as st
 
 st.set_page_config(page_title="Sample Scheduler", layout="wide")
-st.title("Sample Preparation Optimizer")
+st.title("Sample Workflow Optimizer")
 PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ))
 st.caption(f"Current Philippine Time: {ph_now.strftime('%Y-%m-%d %I:%M:%S %p')}")
