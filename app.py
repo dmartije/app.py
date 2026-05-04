@@ -41,7 +41,12 @@ rules = {
     },
     "Sublot": {
         "priority": 1,
-@@ -48,238 +50,256 @@ rules = {
+        "reduction_minutes": 30,
+        "reduction_personnel": 4,
+        "plate_capacity": 1,
+        "sorting_minutes": 35,
+        "drying_minutes": 480,
+        "drying_per_shelf": 4,
         "crushing_per_sample": 7,
         "pulv_per_sample": 10,
     },
@@ -298,7 +303,18 @@ def schedule_batches(batches):
         d = dry_df[dry_df["Batch"] == bid]
         c = crush_df[crush_df["Batch"] == bid]
         p = pulv_df[pulv_df["Batch"] == bid]
-@@ -298,50 +318,56 @@ def schedule_batches(batches):
+
+        if not d.empty:
+            overall_rows.append(
+                {
+                    "Batch": bid,
+                    "Type": rt["Type"],
+                    "Step": "Drying",
+                    "Start": d["Start"].min(),
+                    "Finish": d["Finish"].max(),
+                }
+            )
+        if not c.empty:
             overall_rows.append(
                 {
                     "Batch": bid,
@@ -354,3 +370,85 @@ def optimize_batch_order(batches, time_limit_seconds):
 
         if time.time() - start_t >= time_limit_seconds:
             return best_order, "FEASIBLE", f"Searched {tested}/{total} orders within {time_limit_seconds}s."
+
+    return best_order, "OPTIMAL", f"Exhaustive search complete ({tested}/{total} orders)."
+
+
+if st.button("Recalculate Full Schedule") or st.session_state.batches:
+    best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches, solver_time_limit)
+    red_df, dry_df, crush_df, pulv_df, overall_df = schedule_batches(best_order)
+
+    if overall_df.empty:
+        st.warning("No batches to schedule.")
+    else:
+        st.info(f"Solver Status: {solver_status}")
+        st.caption(solver_message)
+
+        st.subheader("Batch Completion Summary")
+        finals = overall_df.groupby(["Batch", "Type"]).agg(Start=("Start", "min"), Finish=("Finish", "max")).reset_index()
+        finals["Total Duration Hours"] = (((finals["Finish"] - finals["Start"]).dt.total_seconds() / 3600).round(2))
+        st.dataframe(finals, use_container_width=True)
+
+        st.subheader("Summary per Processing Step (per Batch)")
+        step_order = ["Sorting", "Reduction", "Drying", "Crushing", "Pulverizing & Sieving"]
+        step_batch_summary = overall_df.copy()
+        step_batch_summary["Step"] = pd.Categorical(step_batch_summary["Step"], categories=step_order, ordered=True)
+        step_batch_summary = step_batch_summary.sort_values(["Batch", "Step"])
+        step_batch_summary["Duration Minutes"] = (
+            (step_batch_summary["Finish"] - step_batch_summary["Start"]).dt.total_seconds() / 60
+        ).round().astype(int)
+        step_batch_summary["Duration (Min/Hr)"] = (
+            step_batch_summary["Duration Minutes"].astype(str)
+            + " ("
+            + (step_batch_summary["Duration Minutes"] / 60).round(2).astype(str)
+            + " hr)"
+        )
+        step_batch_summary["Batch Label"] = step_batch_summary["Batch"] + " - " + step_batch_summary["Type"]
+        st.dataframe(
+            step_batch_summary[["Batch Label", "Step", "Start", "Finish", "Duration (Min/Hr)"]],
+            use_container_width=True,
+        )
+
+        st.subheader("Overall Step Gantt by Batch")
+        overall_df["Label"] = overall_df["Batch"] + " - " + overall_df["Type"]
+        fig_overall = px.timeline(overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step")
+        fig_overall.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_overall, use_container_width=True)
+
+        st.subheader("Reduction Plate Gantt")
+        fig_plate = px.timeline(
+            red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Type", text="Batch"
+        )
+        fig_plate.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_plate, use_container_width=True)
+
+        st.subheader("Drying Oven Shelf Gantt")
+        dry_plot = []
+        for _, r in dry_df.iterrows():
+            for slot in r["Slots"]:
+                dry_plot.append(
+                    {
+                        "Slot": slot,
+                        "Batch": r["Batch"],
+                        "Type": r["Type"],
+                        "Start": r["Start"],
+                        "Finish": r["Finish"],
+                    }
+                )
+        dry_plot_df = pd.DataFrame(dry_plot)
+        fig_dry = px.timeline(dry_plot_df, x_start="Start", x_end="Finish", y="Slot", color="Type", text="Batch")
+        fig_dry.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_dry, use_container_width=True)
+
+        st.subheader("Crushing Gantt")
+        crush_df["Lane"] = crush_df.apply(lambda x: f"{x['Batch']} ({x['Personnel']}P)", axis=1)
+        fig_cr = px.timeline(crush_df, x_start="Start", x_end="Finish", y="Lane", color="Type", text="Qty")
+        fig_cr.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_cr, use_container_width=True)
+
+        st.subheader("Pulverizing & Sieving Gantt")
+        fig_p = px.timeline(pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+        fig_p.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_p, use_container_width=True)
+
+        st.success(f"Overall estimated completion time: {overall_df['Finish'].max()}")
