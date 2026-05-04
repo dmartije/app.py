@@ -27,6 +27,7 @@ rules = {
         "drying_per_shelf": 26,
         "crushing_per_sample": 3,
         "pulv_per_sample": 6,
+        "lab_drying_minutes": 60,
     },
     "Mine": {
         "priority": 3,
@@ -38,6 +39,7 @@ rules = {
         "drying_per_shelf": 8,
         "crushing_per_sample": 3,
         "pulv_per_sample": 8,
+        "lab_drying_minutes": 60,
     },
     "Sublot": {
         "priority": 1,
@@ -49,6 +51,7 @@ rules = {
         "drying_per_shelf": 4,
         "crushing_per_sample": 7,
         "pulv_per_sample": 10,
+        "lab_drying_minutes": 120,
     },
     "Lot Quality": {
         "priority": 4,
@@ -60,6 +63,7 @@ rules = {
         "drying_per_shelf": 1,
         "crushing_per_sample": 10,
         "pulv_per_sample": 15,
+        "lab_drying_minutes": 120,
     },
 }
 
@@ -325,14 +329,46 @@ def schedule_batches(batches):
                 }
             )
         if not p.empty:
+            pulv_finish = p["Finish"].max()
             overall_rows.append(
                 {
                     "Batch": bid,
                     "Type": rt["Type"],
                     "Step": "Pulverizing & Sieving",
                     "Start": p["Start"].min(),
-                    "Finish": p["Finish"].max(),
+                    "Finish": pulv_finish,
                 }
+            )
+
+            lab_sort_start = pulv_finish
+            lab_sort_finish = lab_sort_start + timedelta(minutes=10)
+            lab_dry_finish = lab_sort_finish + timedelta(minutes=rules[rt["Type"]]["lab_drying_minutes"])
+            cool_finish = lab_dry_finish + timedelta(minutes=45)
+
+            overall_rows.extend(
+                [
+                    {
+                        "Batch": bid,
+                        "Type": rt["Type"],
+                        "Step": "Laboratory Sorting",
+                        "Start": lab_sort_start,
+                        "Finish": lab_sort_finish,
+                    },
+                    {
+                        "Batch": bid,
+                        "Type": rt["Type"],
+                        "Step": "Laboratory Drying",
+                        "Start": lab_sort_finish,
+                        "Finish": lab_dry_finish,
+                    },
+                    {
+                        "Batch": bid,
+                        "Type": rt["Type"],
+                        "Step": "Cooling in Desiccator",
+                        "Start": lab_dry_finish,
+                        "Finish": cool_finish,
+                    },
+                ]
             )
 
     overall_df = pd.DataFrame(overall_rows)
@@ -392,7 +428,16 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
         st.dataframe(finals, use_container_width=True)
 
         st.subheader("Summary per Processing Step (per Batch)")
-        step_order = ["Sorting", "Reduction", "Drying", "Crushing", "Pulverizing & Sieving"]
+        step_order = [
+            "Sorting",
+            "Reduction",
+            "Drying",
+            "Crushing",
+            "Pulverizing & Sieving",
+            "Laboratory Sorting",
+            "Laboratory Drying",
+            "Cooling in Desiccator",
+        ]
         step_batch_summary = overall_df.copy()
         step_batch_summary["Step"] = pd.Categorical(step_batch_summary["Step"], categories=step_order, ordered=True)
         step_batch_summary = step_batch_summary.sort_values(["Batch", "Step"])
