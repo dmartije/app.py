@@ -385,10 +385,10 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
         st.caption(solver_message)
 
         st.subheader("Batch Completion Summary")
+        finals = overall_df.groupby(["Batch", "Type"]).agg(Start=("Start", "min"), Finish=("Finish", "max")).reset_index()
         finals["Estimated Sample Prep Hours"] = (
             ((finals["Finish"] - finals["Start"]).dt.total_seconds() / 3600).round(2)
         )
-        finals["Total Duration Hours"] = (((finals["Finish"] - finals["Start"]).dt.total_seconds() / 3600).round(2))
         st.dataframe(finals, use_container_width=True)
 
         st.subheader("Summary per Processing Step (per Batch)")
