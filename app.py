@@ -2,13 +2,17 @@ import math
 import time
 from datetime import datetime, timedelta
 from itertools import permutations
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 st.set_page_config(page_title="Sample Scheduler", layout="wide")
-st.title("Sample Workflow Optimizer")
+st.title("Sample Preparation Optimizer")
+PH_TZ = ZoneInfo("Asia/Manila")
+ph_now = pd.Timestamp(datetime.now(PH_TZ))
+st.caption(f"Current Philippine Time: {ph_now.strftime('%Y-%m-%d %I:%M:%S %p')}")
 
 # Global scheduling constraints.
 TIME_UNIT = 5
@@ -526,6 +530,29 @@ def optimize_batch_order(batches, time_limit_seconds):
     return best_order, "OPTIMAL", f"Exhaustive search complete ({tested}/{total} orders)."
 
 
+def batch_status_at_time(overall_df, ts):
+    status_map = {
+        "Pulverizing & Sieving": "Pulverizing and Sieving",
+    }
+    result = {}
+    for bid, grp in overall_df.groupby("Batch"):
+        grp = grp.sort_values("Start")
+        if ts < grp["Start"].min():
+            result[bid] = "Waiting to Start"
+            continue
+        active = grp[(grp["Start"] <= ts) & (ts < grp["Finish"])]
+        if not active.empty:
+            step = active.iloc[0]["Step"]
+            result[bid] = status_map.get(step, step)
+            continue
+        if ts >= grp["Finish"].max():
+            result[bid] = "Completed"
+        else:
+            nxt = grp[grp["Start"] > ts].iloc[0]["Step"]
+            result[bid] = f"Waiting ({status_map.get(nxt, nxt)})"
+    return result
+
+
 if st.button("Recalculate Full Schedule") or st.session_state.batches:
     best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches, solver_time_limit)
     red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df = schedule_batches(best_order)
@@ -537,10 +564,42 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
         st.caption(solver_message)
 
         st.subheader("Batch Completion Summary")
-        finals = overall_df.groupby(["Batch", "Type"]).agg(Start=("Start", "min"), Finish=("Finish", "max")).reset_index()
-        finals["Estimated Sample Prep Hours"] = (
-            ((finals["Finish"] - finals["Start"]).dt.total_seconds() / 3600).round(2)
+        sample_prep_steps = ["Sorting", "Reduction", "Drying", "Crushing", "Pulverizing & Sieving"]
+        lab_steps = [
+            "Laboratory Sorting",
+            "Laboratory Drying",
+            "Cooling in Desiccator",
+            "Weighing",
+            "Pelletizing",
+            "XRF Analysis",
+        ]
+
+        prep_df = overall_df[overall_df["Step"].isin(sample_prep_steps)].copy()
+        lab_df = overall_df[overall_df["Step"].isin(lab_steps)].copy()
+
+        prep_summary = (
+            prep_df.groupby(["Batch", "Type"])
+            .agg(PrepStart=("Start", "min"), PrepFinish=("Finish", "max"))
+            .reset_index()
         )
+        lab_summary = (
+            lab_df.groupby(["Batch", "Type"])
+            .agg(LabStart=("Start", "min"), LabFinish=("Finish", "max"))
+            .reset_index()
+        )
+
+        finals = prep_summary.merge(lab_summary, on=["Batch", "Type"], how="left")
+        finals["Estimated Sample Prep Hours"] = (
+            ((finals["PrepFinish"] - finals["PrepStart"]).dt.total_seconds() / 3600).round(2)
+        )
+        finals["Estimated Laboratory Hours"] = (
+            ((finals["LabFinish"] - finals["LabStart"]).dt.total_seconds() / 3600).fillna(0).round(2)
+        )
+        finals["Total Processing Hours"] = (
+            finals["Estimated Sample Prep Hours"] + finals["Estimated Laboratory Hours"]
+        ).round(2)
+        statuses = batch_status_at_time(overall_df, ph_now)
+        finals["Status"] = finals["Batch"].map(statuses).fillna("Waiting to Start")
         st.dataframe(finals, use_container_width=True)
 
         st.subheader("Summary per Processing Step (per Batch)")
@@ -577,21 +636,26 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
 
         st.subheader("Overall Sample Prep and Laboratory Process Chart")
         overall_df["Label"] = overall_df["Batch"] + " - " + overall_df["Type"]
-        fig_overall = px.timeline(overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step")
+        active_overall_df = overall_df[overall_df["Finish"] > ph_now].copy()
+        fig_overall = px.timeline(
+            active_overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step"
+        )
         fig_overall.update_yaxes(autorange="reversed")
         fig_overall.update_yaxes(title_text="Batch No.")
         st.plotly_chart(fig_overall, use_container_width=True)
 
         st.subheader("Plate Allocation")
+        active_red_df = red_df[red_df["Reduction Finish"] > ph_now].copy()
         fig_plate = px.timeline(
-            red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Type", text="Batch"
+            active_red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Type", text="Batch"
         )
         fig_plate.update_yaxes(autorange="reversed")
         st.plotly_chart(fig_plate, use_container_width=True)
 
         st.subheader("Drying Oven Allocation")
         dry_plot = []
-        for _, r in dry_df.iterrows():
+        active_dry_df = dry_df[dry_df["Finish"] > ph_now].copy()
+        for _, r in active_dry_df.iterrows():
             for slot in r["Slots"]:
                 dry_plot.append(
                     {
@@ -609,12 +673,14 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
 
         st.subheader("Crushing Personnel Allocation")
         crush_df["Lane"] = crush_df.apply(lambda x: f"{x['Batch']} ({x['Personnel']}P)", axis=1)
-        fig_cr = px.timeline(crush_df, x_start="Start", x_end="Finish", y="Lane", color="Type", text="Qty")
+        active_crush_df = crush_df[crush_df["Finish"] > ph_now].copy()
+        fig_cr = px.timeline(active_crush_df, x_start="Start", x_end="Finish", y="Lane", color="Type", text="Qty")
         fig_cr.update_yaxes(autorange="reversed")
         st.plotly_chart(fig_cr, use_container_width=True)
 
         st.subheader("Pulverizer Allocation")
-        fig_p = px.timeline(pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+        active_pulv_df = pulv_df[pulv_df["Finish"] > ph_now].copy()
+        fig_p = px.timeline(active_pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
         fig_p.update_yaxes(autorange="reversed")
         st.plotly_chart(fig_p, use_container_width=True)
 
