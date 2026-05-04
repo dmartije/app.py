@@ -566,14 +566,19 @@ if st.button("Generate Optimized Schedule"):
                 summary_df = summary_df.merge(drying_summary, on="Type", how="left")
 
             if not crushing_df.empty:
+                # Total crushing minutes = elapsed window from first crushing start to last crushing finish per sample type.
+                # This is intentionally not a cumulative sum of batch durations.
                 crushing_summary = crushing_df.groupby("Type").agg(
                     First_Crushing_Start=("Start", "min"),
                     Final_Crushing_Finish=("Finish", "max"),
                 ).reset_index()
                 crushing_summary["Total_Crushing_Minutes"] = (
                     (crushing_summary["Final_Crushing_Finish"] - crushing_summary["First_Crushing_Start"])
-                    .dt.total_seconds() // 60
-                ).astype(int)
+                    .dt.total_seconds()
+                    .div(60)
+                    .round()
+                    .astype(int)
+                )
                 summary_df = summary_df.merge(crushing_summary, on="Type", how="left")
 
             st.dataframe(summary_df, use_container_width=True)
