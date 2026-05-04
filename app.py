@@ -89,10 +89,7 @@ st.sidebar.subheader("Append Batch")
 with st.sidebar.form("add_batch_form", clear_on_submit=True):
     new_batch_id = st.text_input("Batch Number / Sample ID", value="")
     new_type = st.selectbox("Sample Type", list(rules.keys()))
-    subcat_options = ["N/A"]
-    if new_type in ["Mine", "Sublot"]:
-        subcat_options = ["Limonite", "Saprolite"]
-    new_subcategory = st.selectbox("Subcategory", subcat_options)
+    new_material = st.selectbox("Material", ["Limonite", "Saprolite"], index=0)
     new_qty = st.number_input("Number of Samples", min_value=1, max_value=10000, value=1)
     new_received = st.datetime_input("Date and Time Received", value=datetime(2026, 5, 4, 8, 0))
     add_clicked = st.form_submit_button("Add Batch")
@@ -103,7 +100,7 @@ if add_clicked and new_batch_id.strip():
             "batch_id": new_batch_id.strip(),
             "sample_type": new_type,
             "qty": int(new_qty),
-            "subcategory": new_subcategory,
+            "material": (new_material if new_type in ["Mine", "Sublot"] else "N/A"),
             "received_at": pd.Timestamp(new_received),
         }
     )
@@ -174,7 +171,7 @@ def schedule_batches(batches):
         r = rules[b["sample_type"]]
         bid = b["batch_id"]
         qty = int(b["qty"])
-        subcategory = b.get("subcategory", "N/A")
+        material = b.get("material", "N/A")
         recv = pd.Timestamp(b["received_at"])
 
         sorting_start = recv
@@ -222,9 +219,9 @@ def schedule_batches(batches):
             red_start += timedelta(minutes=TIME_UNIT)
 
         if b["sample_type"] in ["Mine", "Sublot"]:
-            reduction_per_sample = 10 if (b["sample_type"] == "Mine" and subcategory == "Limonite") else \
-                15 if (b["sample_type"] == "Mine" and subcategory == "Saprolite") else \
-                30 if (b["sample_type"] == "Sublot" and subcategory == "Limonite") else 45
+            reduction_per_sample = 10 if (b["sample_type"] == "Mine" and material == "Limonite") else \
+                15 if (b["sample_type"] == "Mine" and material == "Saprolite") else \
+                30 if (b["sample_type"] == "Sublot" and material == "Limonite") else 45
         else:
             reduction_per_sample = r["reduction_minutes"]
         red_finish = red_start + timedelta(minutes=qty * reduction_per_sample)
@@ -242,7 +239,7 @@ def schedule_batches(batches):
                 "Reduction Start": red_start,
                 "Reduction Finish": red_finish,
                 "Personnel": personnel_need,
-                "Subcategory": subcategory,
+                "Material": material,
                 "Plate": ", ".join(used_plates),
             }
         )
