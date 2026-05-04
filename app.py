@@ -368,6 +368,11 @@ def allocate_drying_jobs(reduction_jobs):
 
     transfer_batches = sorted(transfer_batches, key=lambda x: (x["Ready Time"], x["Priority"]))
 
+    batch_counter = {}
+    for batch in transfer_batches:
+        batch_counter[batch["Type"]] = batch_counter.get(batch["Type"], 0) + 1
+        batch["Batch No"] = batch_counter[batch["Type"]]
+
     for batch in transfer_batches:
         sample_type = batch["Type"]
         qty = batch["Qty"]
@@ -405,6 +410,7 @@ def allocate_drying_jobs(reduction_jobs):
         drying_jobs.append({
             "Type": sample_type,
             "Qty": qty,
+            "Batch No": batch["Batch No"],
             "Priority": batch["Priority"],
             "Reduction Finish": ready_time,
             "Start": current,
@@ -445,6 +451,7 @@ def allocate_crushing_jobs(drying_jobs, reduction_jobs):
         ready_time = batch["Finish"]
         minutes_per_sample = crushing_minutes_per_sample[sample_type]
 
+        # Crushing is tied to the specific drying batch and cannot start before that batch dries.
         current = ready_time
         assigned_personnel = 0
 
@@ -464,6 +471,7 @@ def allocate_crushing_jobs(drying_jobs, reduction_jobs):
         crushing_jobs.append({
             "Type": sample_type,
             "Qty": qty,
+            "Batch No": batch.get("Batch No", 1),
             "Priority": batch["Priority"],
             "Drying Finish": ready_time,
             "Start": current,
@@ -473,7 +481,7 @@ def allocate_crushing_jobs(drying_jobs, reduction_jobs):
         })
 
     return crushing_jobs
-
+    
 # ============================================================
 # RUN APP
 # ============================================================
