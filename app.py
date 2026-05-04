@@ -50,6 +50,13 @@ drying_capacity_per_shelf = {
     "Lot Quality": 1,
 }
 
+crushing_minutes_per_sample = {
+    "Face": 3,
+    "Mine": 3,
+    "Sublot": 7,
+    "Lot Quality": 10,
+}
+
 
 # ============================================================
 # INPUT
@@ -409,6 +416,64 @@ def allocate_drying_jobs(reduction_jobs):
 
     return drying_jobs
 
+
+def active_reduction_personnel_at(ts, reduction_jobs):
+    total = 0
+    for job in reduction_jobs:
+        if job["Start"] <= ts < job["Finish"]:
+            total += job["Personnel"]
+    return total
+
+
+def active_crushing_personnel_at(ts, crushing_jobs):
+    total = 0
+    for job in crushing_jobs:
+        if job["Start"] <= ts < job["Finish"]:
+            total += job["Assigned Personnel"]
+    return total
+
+
+def allocate_crushing_jobs(drying_jobs, reduction_jobs):
+    crushing_jobs = []
+
+    if not drying_jobs:
+        return crushing_jobs
+
+    for batch in sorted(drying_jobs, key=lambda x: (x["Finish"], x["Priority"])):
+        sample_type = batch["Type"]
+        qty = int(batch["Qty"])
+        ready_time = batch["Finish"]
+        minutes_per_sample = crushing_minutes_per_sample[sample_type]
+
+        current = ready_time
+        assigned_personnel = 0
+
+        while assigned_personnel <= 0:
+            used_reduction = active_reduction_personnel_at(current, reduction_jobs)
+            used_crushing = active_crushing_personnel_at(current, crushing_jobs)
+            available = personnel_total - used_reduction - used_crushing
+
+            if available > 0:
+                assigned_personnel = available
+            else:
+                current += timedelta(minutes=TIME_UNIT)
+
+        duration_minutes = math.ceil((qty * minutes_per_sample) / assigned_personnel)
+        finish = current + timedelta(minutes=duration_minutes)
+
+        crushing_jobs.append({
+            "Type": sample_type,
+            "Qty": qty,
+            "Priority": batch["Priority"],
+            "Drying Finish": ready_time,
+            "Start": current,
+            "Finish": finish,
+            "Assigned Personnel": assigned_personnel,
+            "Duration Minutes": duration_minutes,
+        })
+
+    return crushing_jobs
+
 # ============================================================
 # RUN APP
 # ============================================================
@@ -455,11 +520,15 @@ if st.button("Generate Optimized Schedule"):
 
             drying_jobs = allocate_drying_jobs(jobs)
             drying_df = pd.DataFrame(drying_jobs)
+            crushing_jobs = allocate_crushing_jobs(drying_jobs, jobs)
+            crushing_df = pd.DataFrame(crushing_jobs)
 
             final_reduction_finish = df["Finish"].max()
             final_drying_finish = drying_df["Finish"].max() if not drying_df.empty else final_reduction_finish
+            final_crushing_finish = crushing_df["Finish"].max() if not crushing_df.empty else final_drying_finish
             st.success(f"Reduction completed by: {final_reduction_finish}")
             st.success(f"Sorting + Reduction + Drying completed by: {final_drying_finish}")
+            st.success(f"Sorting + Reduction + Drying + Crushing completed by: {final_crushing_finish}")
             
             st.subheader("Summary by Sample Type")
 
@@ -487,6 +556,17 @@ if st.button("Generate Optimized Schedule"):
                     .dt.total_seconds() // 60
                 ).astype(int)
                 summary_df = summary_df.merge(drying_summary, on="Type", how="left")
+
+            if not crushing_df.empty:
+                crushing_summary = crushing_df.groupby("Type").agg(
+                    First_Crushing_Start=("Start", "min"),
+                    Final_Crushing_Finish=("Finish", "max"),
+                ).reset_index()
+                crushing_summary["Total_Crushing_Minutes"] = (
+                    (crushing_summary["Final_Crushing_Finish"] - crushing_summary["First_Crushing_Start"])
+                    .dt.total_seconds() // 60
+                ).astype(int)
+                summary_df = summary_df.merge(crushing_summary, on="Type", how="left")
 
             st.dataframe(summary_df, use_container_width=True)
 
@@ -583,6 +663,26 @@ if st.button("Generate Optimized Schedule"):
                 fig_dry.update_layout(height=650, xaxis_title="Time", yaxis_title="Drying Oven Shelf")
                 st.plotly_chart(fig_dry, use_container_width=True)
 
+            st.subheader("Crushing Gantt Chart")
+            if not crushing_df.empty:
+                crushing_plot_df = crushing_df.copy()
+                crushing_plot_df["Lane"] = crushing_plot_df.apply(
+                    lambda r: f"{r['Type']} (P{r['Assigned Personnel']})", axis=1
+                )
+                fig_crush = px.timeline(
+                    crushing_plot_df,
+                    x_start="Start",
+                    x_end="Finish",
+                    y="Lane",
+                    color="Type",
+                    text="Qty",
+                    color_discrete_map=color_map,
+                    hover_data={"Assigned Personnel": True, "Qty": True}
+                )
+                fig_crush.update_yaxes(autorange="reversed")
+                fig_crush.update_layout(height=500, xaxis_title="Time", yaxis_title="Crushing Allocation")
+                st.plotly_chart(fig_crush, use_container_width=True)
+
             st.subheader("Overall Step Gantt by Sample Type")
             overall_rows = []
             for sample_type in summary_df["Type"]:
@@ -600,6 +700,10 @@ if st.button("Generate Optimized Schedule"):
                 drows = drying_df[drying_df["Type"] == sample_type]
                 if not drows.empty:
                     overall_rows.append({"Type": sample_type, "Step": "Drying", "Start": drows["Start"].min(), "Finish": drows["Finish"].max()})
+
+                crows = crushing_df[crushing_df["Type"] == sample_type]
+                if not crows.empty:
+                    overall_rows.append({"Type": sample_type, "Step": "Crushing", "Start": crows["Start"].min(), "Finish": crows["Finish"].max()})
 
             if overall_rows:
                 overall_df = pd.DataFrame(overall_rows)
