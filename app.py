@@ -3,6 +3,8 @@ import time
 from datetime import datetime, timedelta
 from itertools import permutations
 from zoneinfo import ZoneInfo
+from pathlib import Path
+import json
 
 import pandas as pd
 import plotly.express as px
@@ -13,6 +15,28 @@ st.title("Sample Workflow Optimizer")
 PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
 st.caption(f"Current Philippine Time: {ph_now.strftime('%Y-%m-%d %I:%M:%S %p')}")
+BATCH_STORE = Path("batches_store.json")
+
+
+def load_batches():
+    if BATCH_STORE.exists():
+        try:
+            data = json.loads(BATCH_STORE.read_text())
+            for r in data:
+                r["received_at"] = pd.Timestamp(r["received_at"])
+            return data
+        except Exception:
+            return []
+    return []
+
+
+def save_batches(records):
+    serializable = []
+    for r in records:
+        row = dict(r)
+        row["received_at"] = str(pd.Timestamp(row["received_at"]))
+        serializable.append(row)
+    BATCH_STORE.write_text(json.dumps(serializable, indent=2))
 
 # Global scheduling constraints.
 TIME_UNIT = 5
@@ -83,7 +107,7 @@ solver_time_limit = st.sidebar.slider("Solver Time Limit (seconds)", min_value=3
 
 # Persist batches across Streamlit reruns.
 if "batches" not in st.session_state:
-    st.session_state.batches = []
+    st.session_state.batches = load_batches()
 
 st.sidebar.subheader("Append Batch")
 with st.sidebar.form("add_batch_form", clear_on_submit=True):
@@ -104,6 +128,7 @@ if add_clicked and new_batch_id.strip():
             "received_at": pd.Timestamp(new_received),
         }
     )
+    save_batches(st.session_state.batches)
     st.rerun()
 
 st.subheader("Batch List Table")
@@ -116,6 +141,7 @@ if st.session_state.batches:
         kept["qty"] = kept["qty"].astype(int)
         kept["received_at"] = pd.to_datetime(kept["received_at"])
         st.session_state.batches = kept.to_dict("records")
+        save_batches(st.session_state.batches)
         st.rerun()
 else:
     st.info("No batches yet. Add a batch from the sidebar.")
@@ -599,7 +625,8 @@ def batch_status_at_time(overall_df, ts):
     return result
 
 
-if st.button("Recalculate Full Schedule") or st.session_state.batches:
+refresh_clicked = st.button("Refresh Schedule")
+if refresh_clicked or st.session_state.batches:
     best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches, solver_time_limit)
     red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df = schedule_batches(best_order)
 
