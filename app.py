@@ -1,12 +1,14 @@
 import math
+import time
 from datetime import datetime, timedelta
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import time
 
 st.set_page_config(page_title="Sample Scheduler", layout="wide")
-st.title("Sample Preparation Optimizer (Batch-based: Sorting → Pulverizing/Sieving)")
+st.title("Sample Preparation Optimizer")
 
 TIME_UNIT = 5
 TOTAL_PLATES = 5
@@ -30,6 +32,7 @@ window_end = st.sidebar.time_input("Higher-capacity window end", value=datetime(
 ovens_high = st.sidebar.selectbox("Ovens operating during higher-capacity window", [1, 2], index=1)
 ovens_low = st.sidebar.selectbox("Ovens operating outside that window", [1, 2], index=0)
 pulverizer_count = st.sidebar.selectbox("Pulverizers operating", [1, 2], index=1)
+solver_time_limit = st.sidebar.slider("Solver Time Limit (seconds)", min_value=3, max_value=60, value=15)
 
 if "batches" not in st.session_state:
     st.session_state.batches = []
@@ -78,7 +81,6 @@ def schedule_batches(batches):
     if not batches:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    batches = sorted(batches, key=lambda b: (b["received_at"], rules[b["sample_type"]]["priority"]))
 
     reduction_rows, drying_rows, crushing_rows, pulv_rows = [], [], [], []
 
@@ -198,18 +200,48 @@ def schedule_batches(batches):
     return red_df, dry_df, crush_df, pulv_df, overall_df
 
 
+
+def optimize_batch_order(batches, time_limit_seconds):
+    if not batches:
+        return batches, "FEASIBLE", "No batches."
+
+    base = sorted(batches, key=lambda b: (b["received_at"], rules[b["sample_type"]]["priority"]))
+    n = len(base)
+    if n > 8:
+        return base, "FEASIBLE", "Heuristic order used (too many batches for exhaustive search)."
+
+    start_t = time.time()
+    best_order = base
+    best_finish = None
+    tested = 0
+    total = math.factorial(n)
+
+    for perm in permutations(base):
+        tested += 1
+        red_df, dry_df, crush_df, pulv_df, overall_df = schedule_batches(list(perm))
+        finish = overall_df["Finish"].max() if not overall_df.empty else pd.Timestamp.min
+        if best_finish is None or finish < best_finish:
+            best_finish = finish
+            best_order = list(perm)
+
+        if time.time() - start_t >= time_limit_seconds:
+            return best_order, "FEASIBLE", f"Searched {tested}/{total} orders within {time_limit_seconds}s."
+
+    return best_order, "OPTIMAL", f"Exhaustive search complete ({tested}/{total} orders)."
+
 if st.button("Recalculate Full Schedule") or st.session_state.batches:
-    red_df, dry_df, crush_df, pulv_df, overall_df = schedule_batches(st.session_state.batches)
+    best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches, solver_time_limit)
+    red_df, dry_df, crush_df, pulv_df, overall_df = schedule_batches(best_order)
 
     if overall_df.empty:
         st.warning("No batches to schedule.")
     else:
-        st.info("Solver Status: FEASIBLE (Deterministic heuristic schedule).")
-        st.caption("Targeting least completion time by priority using deterministic resource allocation; not CP-SAT proof of optimality.")
+        st.info(f"Solver Status: {solver_status}")
+        st.caption(solver_message)
 
         st.subheader("Batch Completion Summary")
         finals = overall_df.groupby(["Batch", "Type"]).agg(Start=("Start", "min"), Finish=("Finish", "max")).reset_index()
-        finals["Total Duration Minutes"] = ((finals["Finish"] - finals["Start"]).dt.total_seconds() / 60).round().astype(int)
+        finals["Total Duration Hours"] = (((finals["Finish"] - finals["Start"]).dt.total_seconds() / 3600).round(2))
         st.dataframe(finals, use_container_width=True)
 
         st.subheader("Summary per Processing Step (per Batch)")
@@ -218,8 +250,9 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
         step_batch_summary["Step"] = pd.Categorical(step_batch_summary["Step"], categories=step_order, ordered=True)
         step_batch_summary = step_batch_summary.sort_values(["Batch", "Step"]) 
         step_batch_summary["Duration Minutes"] = ((step_batch_summary["Finish"] - step_batch_summary["Start"]).dt.total_seconds() / 60).round().astype(int)
+        step_batch_summary["Duration (Min/Hr)"] = step_batch_summary["Duration Minutes"].astype(str) + " (" + (step_batch_summary["Duration Minutes"] / 60).round(2).astype(str) + " hr)"
         step_batch_summary["Batch Label"] = step_batch_summary["Batch"] + " - " + step_batch_summary["Type"]
-        st.dataframe(step_batch_summary[["Batch Label", "Step", "Start", "Finish", "Duration Minutes"]], use_container_width=True)
+        st.dataframe(step_batch_summary[["Batch Label", "Step", "Start", "Finish", "Duration (Min/Hr)"]], use_container_width=True)
 
         st.subheader("Overall Step Gantt by Batch")
         overall_df["Label"] = overall_df["Batch"] + " - " + overall_df["Type"]
