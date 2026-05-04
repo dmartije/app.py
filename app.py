@@ -4,817 +4,385 @@ from datetime import datetime, timedelta
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from ortools.sat.python import cp_model
-
-
-# ============================================================
-# CONFIG
-# ============================================================
 
 st.set_page_config(page_title="Sample Scheduler", layout="wide")
-st.title("Sample Preparation Optimizer")
+st.title("Sample Preparation Optimizer (Batch-based: Sorting → Pulverizing/Sieving)")
 
-TOTAL_PLATES = 5
 TIME_UNIT = 5
-PLATES = [f"Plate {i}" for i in range(1, TOTAL_PLATES + 1)]
-
-# Reduction step rules
-rules = {
-    "Sublot": {"priority": 1, "minutes": 30, "personnel": 4, "capacity": 1},
-    "Face": {"priority": 2, "minutes": 5, "personnel": 1, "capacity": 10},
-    "Mine": {"priority": 3, "minutes": 10, "personnel": 3, "capacity": 2},
-    "Lot Quality": {"priority": 4, "minutes": 30, "personnel": 1, "capacity": 1},
-}
-
-# Sorting time before reduction can start
-sorting_minutes = {
-    "Face": 60,
-    "Mine": 30,
-    "Sublot": 35,
-    "Lot Quality": 30,
-}
-
-# Drying rules
-drying_minutes = {
-    "Sublot": 480,
-    "Face": 480,
-    "Mine": 480,
-    "Lot Quality": 480,
-}
-
+TOTAL_PLATES = 5
 SHELVES_PER_OVEN = 8
-drying_capacity_per_shelf = {
-    "Sublot": 4,
-    "Face": 26,
-    "Mine": 8,
-    "Lot Quality": 1,
+
+rules = {
+    "Face": {
+        "priority": 2,
+        "reduction_minutes": 5,
+        "reduction_personnel": 1,
+        "plate_capacity": 10,
+        "sorting_minutes": 60,
+        "drying_minutes": 480,
+        "drying_per_shelf": 26,
+        "crushing_per_sample": 3,
+        "pulv_per_sample": 6,
+    },
+    "Mine": {
+        "priority": 3,
+        "reduction_minutes": 10,
+        "reduction_personnel": 3,
+        "plate_capacity": 2,
+        "sorting_minutes": 30,
+        "drying_minutes": 480,
+        "drying_per_shelf": 8,
+        "crushing_per_sample": 3,
+        "pulv_per_sample": 8,
+    },
+    "Sublot": {
+        "priority": 1,
+        "reduction_minutes": 30,
+        "reduction_personnel": 4,
+        "plate_capacity": 1,
+        "sorting_minutes": 35,
+        "drying_minutes": 480,
+        "drying_per_shelf": 4,
+        "crushing_per_sample": 7,
+        "pulv_per_sample": 10,
+    },
+    "Lot Quality": {
+        "priority": 4,
+        "reduction_minutes": 30,
+        "reduction_personnel": 1,
+        "plate_capacity": 1,
+        "sorting_minutes": 30,
+        "drying_minutes": 480,
+        "drying_per_shelf": 1,
+        "crushing_per_sample": 10,
+        "pulv_per_sample": 15,
+    },
 }
 
-crushing_minutes_per_sample = {
-    "Face": 3,
-    "Mine": 3,
-    "Sublot": 7,
-    "Lot Quality": 10,
-}
-
-pulverizing_minutes_per_sample = {
-    "Face": 6,
-    "Mine": 8,
-    "Sublot": 10,
-    "Lot Quality": 15,
-}
-
-
-# ============================================================
-# INPUT
-# ============================================================
-
-st.sidebar.header("Input")
-
-receipt_time = st.sidebar.datetime_input(
-    "Date and Time Received",
-    value=datetime(2026, 5, 2, 8, 0)
-)
-
-personnel_total = st.sidebar.number_input(
-    "Personnel Present",
-    min_value=1,
-    max_value=100,
-    value=20
-)
-
-samples = {
-    "Face": st.sidebar.number_input("Face Samples", min_value=0, max_value=1000, value=100),
-    "Mine": st.sidebar.number_input("Mine Samples", min_value=0, max_value=1000, value=15),
-    "Sublot": st.sidebar.number_input("Sublot Samples", min_value=0, max_value=1000, value=3),
-    "Lot Quality": st.sidebar.number_input("Lot Quality Samples", min_value=0, max_value=1000, value=1),
-}
-
-time_limit = st.sidebar.slider(
-    "Solver Time Limit (seconds)",
-    min_value=3,
-    max_value=60,
-    value=15
-)
-
-
-st.sidebar.subheader("Drying Oven Availability")
-default_shift_start = datetime(2026, 5, 2, 14, 0).time()
-default_shift_end = datetime(2026, 5, 3, 6, 0).time()
-
-window_start = st.sidebar.time_input("Higher-capacity window start", value=default_shift_start)
-window_end = st.sidebar.time_input("Higher-capacity window end", value=default_shift_end)
+st.sidebar.header("Shared Capacity Inputs")
+personnel_total = st.sidebar.number_input("Personnel Present", min_value=1, max_value=100, value=20)
+window_start = st.sidebar.time_input("Higher-capacity window start", value=datetime(2026, 5, 4, 14, 0).time())
+window_end = st.sidebar.time_input("Higher-capacity window end", value=datetime(2026, 5, 5, 6, 0).time())
 ovens_high = st.sidebar.selectbox("Ovens operating during higher-capacity window", [1, 2], index=1)
 ovens_low = st.sidebar.selectbox("Ovens operating outside that window", [1, 2], index=0)
-max_face_drying_batch = st.sidebar.number_input("Max Face drying transfer batch", min_value=1, max_value=1000, value=150)
 pulverizer_count = st.sidebar.selectbox("Pulverizers operating", [1, 2], index=1)
 
+if "batches" not in st.session_state:
+    st.session_state.batches = []
 
-# ============================================================
-# HELPER: CALCULATE HORIZON
-# ============================================================
+st.sidebar.subheader("Append Batch")
+new_batch_id = st.sidebar.text_input("Batch Number / Sample ID", value="F26-001")
+new_type = st.sidebar.selectbox("Sample Type", list(rules.keys()))
+new_qty = st.sidebar.number_input("Number of Samples", min_value=1, max_value=10000, value=120)
+new_received = st.sidebar.datetime_input("Date and Time Received", value=datetime(2026, 5, 4, 8, 0))
 
-def calculate_horizon(samples):
-    max_sort_units = max(
-        sorting_minutes[sample_type] // TIME_UNIT
-        for sample_type, qty in samples.items()
-        if qty > 0
-    ) if any(qty > 0 for qty in samples.values()) else 0
+if st.sidebar.button("Add Batch"):
+    st.session_state.batches.append(
+        {
+            "batch_id": new_batch_id.strip(),
+            "sample_type": new_type,
+            "qty": int(new_qty),
+            "received_at": pd.Timestamp(new_received),
+        }
+    )
 
-    total_reduction_units = 0
-
-    for sample_type, qty in samples.items():
-        if qty <= 0:
-            continue
-
-        rule = rules[sample_type]
-
-        max_capacity = min(
-            personnel_total // rule["personnel"],
-            TOTAL_PLATES * rule["capacity"]
-        )
-
-        if max_capacity <= 0:
-            continue
-
-        cycles = math.ceil(qty / max_capacity)
-        duration_units = rule["minutes"] // TIME_UNIT
-        total_reduction_units += cycles * duration_units
-
-    return max(200, max_sort_units + total_reduction_units + 50)
-
-
-# ============================================================
-# SOLVER
-# ============================================================
-
-def solve(samples):
-    model = cp_model.CpModel()
-    horizon = calculate_horizon(samples)
-
-    jobs = []
-
-    for sample_type, qty in samples.items():
-        if qty == 0:
-            continue
-
-        rule = rules[sample_type]
-        duration_units = rule["minutes"] // TIME_UNIT
-
-        # Reduction cannot start until sorting is finished
-        sorting_units = sorting_minutes[sample_type] // TIME_UNIT
-
-        max_batch = min(
-            qty,
-            personnel_total // rule["personnel"],
-            TOTAL_PLATES * rule["capacity"],
-        )
-
-        if max_batch <= 0:
-            raise ValueError(f"Not enough personnel to process {sample_type}.")
-
-        for t in range(sorting_units, horizon):
-            for q in range(1, max_batch + 1):
-                personnel_needed = q * rule["personnel"]
-                plates_needed = math.ceil(q / rule["capacity"])
-
-                if personnel_needed > personnel_total or plates_needed > TOTAL_PLATES:
-                    continue
-
-                var = model.NewBoolVar(f"{sample_type}_{t}_{q}")
-
-                jobs.append({
-                    "var": var,
-                    "type": sample_type,
-                    "start": t,
-                    "end": t + duration_units,
-                    "qty": q,
-                    "personnel": personnel_needed,
-                    "plates": plates_needed,
-                    "priority": rule["priority"],
-                    "duration_minutes": rule["minutes"],
-                    "sorting_minutes": sorting_minutes[sample_type],
-                })
-
-    # Complete exact required sample quantity
-    for sample_type, qty in samples.items():
-        if qty == 0:
-            continue
-
-        model.Add(
-            sum(j["qty"] * j["var"] for j in jobs if j["type"] == sample_type) == qty
-        )
-
-    # Personnel and plate constraints per time slot
-    for t in range(horizon):
-        model.Add(
-            sum(
-                j["personnel"] * j["var"]
-                for j in jobs
-                if j["start"] <= t < j["end"]
-            ) <= personnel_total
-        )
-
-        model.Add(
-            sum(
-                j["plates"] * j["var"]
-                for j in jobs
-                if j["start"] <= t < j["end"]
-            ) <= TOTAL_PLATES
-        )
-
-    # Makespan objective
-    makespan = model.NewIntVar(0, horizon, "makespan")
-
-    for j in jobs:
-        model.Add(makespan >= j["end"]).OnlyEnforceIf(j["var"])
-
-    # Strict priority objective
-    type_finish = {}
-
-    for sample_type in rules.keys():
-        if samples.get(sample_type, 0) > 0:
-            type_finish[sample_type] = model.NewIntVar(0, horizon, f"{sample_type}_finish")
-
-            for j in jobs:
-                if j["type"] == sample_type:
-                    model.Add(type_finish[sample_type] >= j["end"]).OnlyEnforceIf(j["var"])
-
-    objective_terms = []
-
-    if "Sublot" in type_finish:
-        objective_terms.append(type_finish["Sublot"] * 100000000)
-
-    if "Face" in type_finish:
-        objective_terms.append(type_finish["Face"] * 1000000)
-
-    if "Mine" in type_finish:
-        objective_terms.append(type_finish["Mine"] * 10000)
-
-    if "Lot Quality" in type_finish:
-        objective_terms.append(type_finish["Lot Quality"] * 100)
-
-    objective_terms.append(makespan)
-
-    model.Minimize(sum(objective_terms))
-
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = time_limit
-    solver.parameters.num_search_workers = 8
-
-    status = solver.Solve(model)
-
-    if status == cp_model.OPTIMAL:
-        status_text = "OPTIMAL"
-        status_message = "✅ Optimal solution found. The solver proved this is the best schedule within the model rules."
-    elif status == cp_model.FEASIBLE:
-        status_text = "FEASIBLE"
-        status_message = "⚠️ Feasible solution found. It may be near-optimal, but not mathematically proven within the time limit."
-    else:
-        raise ValueError("No valid schedule found. Try increasing solver time or check personnel/sample inputs.")
-
-    result = []
-
-    for j in jobs:
-        if solver.Value(j["var"]) == 1:
-            sorting_end = receipt_time + timedelta(minutes=j["sorting_minutes"])
-            reduction_start = receipt_time + timedelta(minutes=j["start"] * TIME_UNIT)
-            reduction_finish = receipt_time + timedelta(minutes=j["end"] * TIME_UNIT)
-
-            result.append({
-                "Type": j["type"],
-                "Qty": j["qty"],
-                "Personnel": j["personnel"],
-                "PlatesNeeded": j["plates"],
-                "Receipt Time": receipt_time,
-                "Sorting Minutes": j["sorting_minutes"],
-                "Sorting End": sorting_end,
-                "Start": reduction_start,
-                "Finish": reduction_finish,
-                "Duration Minutes": j["duration_minutes"],
-                "Priority": j["priority"]
-            })
-
-    return result, status_text, status_message
+st.subheader("Batch List Table")
+if st.session_state.batches:
+    edit_df = pd.DataFrame(st.session_state.batches)
+    edit_df["delete"] = False
+    edited = st.data_editor(edit_df, use_container_width=True, num_rows="dynamic")
+    if st.button("Apply Batch Edits / Deletes"):
+        kept = edited[~edited["delete"]].drop(columns=["delete"]).copy()
+        kept["qty"] = kept["qty"].astype(int)
+        kept["received_at"] = pd.to_datetime(kept["received_at"])
+        st.session_state.batches = kept.to_dict("records")
+        st.rerun()
+else:
+    st.info("No batches yet. Add a batch from the sidebar.")
 
 
-# ============================================================
-# ASSIGN PHYSICAL PLATES
-# ============================================================
-
-def assign_plates(jobs):
-    plate_free = {plate: receipt_time for plate in PLATES}
-    output = []
-
-    for job in sorted(jobs, key=lambda x: (x["Start"], x["Priority"])):
-        needed = job["PlatesNeeded"]
-        assigned = []
-
-        for plate in PLATES:
-            if plate_free[plate] <= job["Start"]:
-                assigned.append(plate)
-                if len(assigned) == needed:
-                    break
-
-        if len(assigned) < needed:
-            assigned += ["Unassigned"] * (needed - len(assigned))
-
-        for plate in assigned:
-            if plate != "Unassigned":
-                plate_free[plate] = job["Finish"]
-
-        job_copy = job.copy()
-        job_copy["Plate"] = ", ".join(assigned)
-        output.append(job_copy)
-
-    return output
-
-
-
-
-def is_within_daily_window(ts, start_t, end_t):
+def within_window(ts: pd.Timestamp) -> bool:
     t = ts.time()
-    if start_t <= end_t:
-        return start_t <= t < end_t
-    return t >= start_t or t < end_t
+    if window_start <= window_end:
+        return window_start <= t < window_end
+    return t >= window_start or t < window_end
 
 
-def ovens_available_at(ts, start_t, end_t, high, low):
-    return high if is_within_daily_window(ts, start_t, end_t) else low
+def ovens_available(ts: pd.Timestamp) -> int:
+    return ovens_high if within_window(ts) else ovens_low
 
 
-def allocate_drying_jobs(reduction_jobs):
-    drying_jobs = []
+def schedule_batches(batches):
+    if not batches:
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+        )
 
-    reduction_df = pd.DataFrame(reduction_jobs)
-    if reduction_df.empty:
-        return drying_jobs
+    batches = sorted(batches, key=lambda b: (b["received_at"], rules[b["sample_type"]]["priority"]))
 
-    batch_limits = {
-        "Face": int(max_face_drying_batch),
-        "Mine": 10**9,
-        "Sublot": 10**9,
-        "Lot Quality": 10**9,
-    }
+    reduction_rows, drying_rows, crushing_rows, pulv_rows = [], [], [], []
 
-    # Split reduction outputs into transfer batches that can start drying as soon as reduced.
-    transfer_batches = []
-    for _, r in reduction_df.sort_values(["Finish", "Priority", "Type"]).iterrows():
-        sample_type = r["Type"]
-        remaining = int(r["Qty"])
-        cap = batch_limits.get(sample_type, 10**9)
+    # Resource state
+    plate_free = {f"Plate {i}": pd.Timestamp.min for i in range(1, TOTAL_PLATES + 1)}
+    oven_jobs = []
+    crushing_jobs = []
+    pulv_free = {f"Pulverizer {i}": pd.Timestamp.min for i in range(1, int(pulverizer_count) + 1)}
 
-        while remaining > 0:
-            take = min(remaining, cap)
-            transfer_batches.append({
-                "Type": sample_type,
-                "Qty": take,
-                "Priority": int(r["Priority"]),
-                "Ready Time": r["Finish"],
-            })
-            remaining -= take
+    def active_crushing_personnel(ts):
+        return sum(j["personnel"] for j in crushing_jobs if j["start"] <= ts < j["finish"])
 
-    transfer_batches = sorted(transfer_batches, key=lambda x: (x["Ready Time"], x["Priority"]))
+    for b in batches:
+        r = rules[b["sample_type"]]
+        bid = b["batch_id"]
+        qty = int(b["qty"])
+        recv = pd.Timestamp(b["received_at"])
 
-    batch_counter = {}
-    for batch in transfer_batches:
-        batch_counter[batch["Type"]] = batch_counter.get(batch["Type"], 0) + 1
-        batch["Batch No"] = batch_counter[batch["Type"]]
+        # Sorting
+        sorting_start = recv
+        sorting_end = recv + timedelta(minutes=r["sorting_minutes"])
 
-    for batch in transfer_batches:
-        sample_type = batch["Type"]
-        qty = batch["Qty"]
-        ready_time = batch["Ready Time"]
+        # Reduction
+        red_start = sorting_end
+        while True:
+            plates_need = math.ceil(qty / r["plate_capacity"])
+            plates_need = min(plates_need, TOTAL_PLATES)
+            free_plates = [p for p, t in plate_free.items() if t <= red_start]
+            personnel_need = min(
+                personnel_total,
+                max(1, math.ceil(qty / r["plate_capacity"]) * r["reduction_personnel"]),
+            )
+            if len(free_plates) >= plates_need:
+                break
+            red_start += timedelta(minutes=TIME_UNIT)
 
-        shelf_capacity = drying_capacity_per_shelf[sample_type]
-        shelves_needed = math.ceil(qty / shelf_capacity)
-        duration = timedelta(minutes=drying_minutes[sample_type])
+        red_finish = red_start + timedelta(minutes=r["reduction_minutes"])
+        used_plates = free_plates[:plates_need]
+        for p in used_plates:
+            plate_free[p] = red_finish
 
-        current = ready_time
-        assigned_shelves = []
+        reduction_rows.append(
+            {
+                "Batch": bid,
+                "Type": b["sample_type"],
+                "Qty": qty,
+                "Sorting Start": sorting_start,
+                "Sorting End": sorting_end,
+                "Reduction Start": red_start,
+                "Reduction Finish": red_finish,
+                "Personnel": personnel_need,
+                "Plate": ", ".join(used_plates),
+            }
+        )
 
-        while not assigned_shelves:
-            available_ovens = ovens_available_at(current, window_start, window_end, ovens_high, ovens_low)
-            oven_candidates = [f"Oven {i}" for i in range(1, available_ovens + 1)]
+        # Drying
+        dry_start = red_finish
+        shelves_need = math.ceil(qty / r["drying_per_shelf"])
+        duration = timedelta(minutes=r["drying_minutes"])
+        assigned_slots = []
+
+        while not assigned_slots:
+            ovens = ovens_available(dry_start)
+            candidates = [f"Oven {i}" for i in range(1, ovens + 1)]
 
             active_slots = []
-            for dj in drying_jobs:
-                if not (current + duration <= dj["Start"] or current >= dj["Finish"]):
-                    active_slots.extend(dj["Shelf Allocations"])
+            for dj in oven_jobs:
+                if not (dry_start + duration <= dj["start"] or dry_start >= dj["finish"]):
+                    active_slots.extend(dj["slots"])
 
             free_slots = []
-            for oven in oven_candidates:
+            for o in candidates:
                 for shelf in range(1, SHELVES_PER_OVEN + 1):
-                    slot = f"{oven}-Shelf {shelf}"
+                    slot = f"{o}-Shelf {shelf}"
                     if slot not in active_slots:
                         free_slots.append(slot)
 
-            assigned_shelves = free_slots[:shelves_needed]
+            assigned_slots = free_slots[:shelves_need]
+            if len(assigned_slots) < shelves_need:
+                assigned_slots = []
+                dry_start += timedelta(minutes=TIME_UNIT)
 
-            if len(assigned_shelves) < shelves_needed:
-                assigned_shelves = []
-                current += timedelta(minutes=TIME_UNIT)
+        dry_finish = dry_start + duration
+        oven_jobs.append({"start": dry_start, "finish": dry_finish, "slots": assigned_slots})
+        drying_rows.append(
+            {
+                "Batch": bid,
+                "Type": b["sample_type"],
+                "Qty": qty,
+                "Start": dry_start,
+                "Finish": dry_finish,
+                "Slots": assigned_slots,
+            }
+        )
 
-        drying_jobs.append({
-            "Type": sample_type,
-            "Qty": qty,
-            "Batch No": batch["Batch No"],
-            "Priority": batch["Priority"],
-            "Reduction Finish": ready_time,
-            "Start": current,
-            "Finish": current + duration,
-            "Duration Minutes": drying_minutes[sample_type],
-            "Shelves Needed": shelves_needed,
-            "Shelf Allocations": assigned_shelves,
-        })
+        # Crushing
+        crush_start = dry_finish
+        while personnel_total - active_crushing_personnel(crush_start) <= 0:
+            crush_start += timedelta(minutes=TIME_UNIT)
 
-    return drying_jobs
+        crush_personnel = max(1, personnel_total - active_crushing_personnel(crush_start))
+        crush_minutes = math.ceil((qty * r["crushing_per_sample"]) / crush_personnel)
+        crush_finish = crush_start + timedelta(minutes=crush_minutes)
 
+        crushing_jobs.append({"start": crush_start, "finish": crush_finish, "personnel": crush_personnel})
+        crushing_rows.append(
+            {
+                "Batch": bid,
+                "Type": b["sample_type"],
+                "Qty": qty,
+                "Start": crush_start,
+                "Finish": crush_finish,
+                "Personnel": crush_personnel,
+            }
+        )
 
-def active_reduction_personnel_at(ts, reduction_jobs):
-    total = 0
-    for job in reduction_jobs:
-        if job["Start"] <= ts < job["Finish"]:
-            total += job["Personnel"]
-    return total
-
-
-def active_crushing_personnel_at(ts, crushing_jobs):
-    total = 0
-    for job in crushing_jobs:
-        if job["Start"] <= ts < job["Finish"]:
-            total += job["Assigned Personnel"]
-    return total
-
-
-def allocate_crushing_jobs(drying_jobs, reduction_jobs):
-    crushing_jobs = []
-
-    if not drying_jobs:
-        return crushing_jobs
-
-    for batch in sorted(drying_jobs, key=lambda x: (x["Finish"], x["Priority"])):
-        sample_type = batch["Type"]
-        qty = int(batch["Qty"])
-        ready_time = batch["Finish"]
-        minutes_per_sample = crushing_minutes_per_sample[sample_type]
-
-        # Crushing is tied to the specific drying batch and cannot start before that batch dries.
-        current = ready_time
-        assigned_personnel = 0
-
-        while assigned_personnel <= 0:
-            used_reduction = active_reduction_personnel_at(current, reduction_jobs)
-            used_crushing = active_crushing_personnel_at(current, crushing_jobs)
-            available = personnel_total - used_reduction - used_crushing
-
-            if available > 0:
-                assigned_personnel = available
-            else:
-                current += timedelta(minutes=TIME_UNIT)
-
-        duration_minutes = math.ceil((qty * minutes_per_sample) / assigned_personnel)
-        finish = current + timedelta(minutes=duration_minutes)
-
-        crushing_jobs.append({
-            "Type": sample_type,
-            "Qty": qty,
-            "Batch No": batch.get("Batch No", 1),
-            "Priority": batch["Priority"],
-            "Drying Finish": ready_time,
-            "Start": current,
-            "Finish": finish,
-            "Assigned Personnel": assigned_personnel,
-            "Duration Minutes": duration_minutes,
-        })
-
-    return crushing_jobs
-
-
-def allocate_pulverizing_jobs(crushing_jobs):
-    pulverizing_jobs = []
-    if not crushing_jobs:
-        return pulverizing_jobs
-
-    machine_free = {f"Pulverizer {i}": receipt_time for i in range(1, int(pulverizer_count) + 1)}
-
-    for batch in sorted(crushing_jobs, key=lambda x: (x["Finish"], x["Priority"])):
-        sample_type = batch["Type"]
-        qty = int(batch["Qty"])
-        ready_time = batch["Finish"]
-        mins_per_sample = pulverizing_minutes_per_sample[sample_type]
-
-        # Split across available pulverizers for minimum finish time
-        machines = list(machine_free.keys())
+        # Pulverizing & Sieving (single combined step)
+        machines = sorted(list(pulv_free.keys()), key=lambda m: pulv_free[m])
         q_base = qty // len(machines)
         q_rem = qty % len(machines)
 
-        for i, machine in enumerate(sorted(machines, key=lambda m: machine_free[m])):
-            q_machine = q_base + (1 if i < q_rem else 0)
-            if q_machine <= 0:
+        for i, m in enumerate(machines):
+            q_m = q_base + (1 if i < q_rem else 0)
+            if q_m <= 0:
                 continue
 
-            start = max(ready_time, machine_free[machine])
-            duration = math.ceil(q_machine * mins_per_sample)
-            finish = start + timedelta(minutes=duration)
-            machine_free[machine] = finish
+            p_start = max(crush_finish, pulv_free[m])
+            p_minutes = math.ceil(q_m * r["pulv_per_sample"])
+            p_finish = p_start + timedelta(minutes=p_minutes)
+            pulv_free[m] = p_finish
 
-            pulverizing_jobs.append({
-                "Type": sample_type,
-                "Batch No": batch.get("Batch No", 1),
-                "Qty": q_machine,
-                "Priority": batch["Priority"],
-                "Crushing Finish": ready_time,
-                "Machine": machine,
-                "Start": start,
-                "Finish": finish,
-                "Duration Minutes": duration,
-            })
-
-    return pulverizing_jobs
-
-
-
-# ============================================================
-# RUN APP
-# ============================================================
-
-if st.button("Generate Optimized Schedule"):
-
-    try:
-        jobs, status, status_message = solve(samples)
-
-        jobs = assign_plates(jobs)
-        df = pd.DataFrame(jobs)
-
-        if df.empty:
-            st.warning("No samples entered.")
-        else:
-            st.info(f"Solver Status: {status}")
-            st.write(status_message)
-
-            df = df.sort_values(["Type", "Start"])
-            df["Cycle No."] = df.groupby("Type").cumcount() + 1
-            df = df.sort_values(["Start", "Priority", "Type"])
-
-            st.subheader("Detailed Schedule")
-
-            st.dataframe(
-                df[
-                    [
-                        "Type",
-                        "Qty",
-                        "Personnel",
-                        "PlatesNeeded",
-                        "Plate",
-                        "Cycle No.",
-                        "Receipt Time",
-                        "Sorting Minutes",
-                        "Sorting End",
-                        "Start",
-                        "Finish",
-                        "Duration Minutes",
-                    ]
-                ],
-                use_container_width=True
-            )
-
-            drying_jobs = allocate_drying_jobs(jobs)
-            drying_df = pd.DataFrame(drying_jobs)
-            crushing_jobs = allocate_crushing_jobs(drying_jobs, jobs)
-            crushing_df = pd.DataFrame(crushing_jobs)
-            pulverizing_jobs = allocate_pulverizing_jobs(crushing_jobs)
-            pulverizing_df = pd.DataFrame(pulverizing_jobs)
-
-            final_reduction_finish = df["Finish"].max()
-            final_drying_finish = drying_df["Finish"].max() if not drying_df.empty else final_reduction_finish
-            final_crushing_finish = crushing_df["Finish"].max() if not crushing_df.empty else final_drying_finish
-            final_pulverizing_finish = pulverizing_df["Finish"].max() if not pulverizing_df.empty else final_crushing_finish
-            st.success(f"Reduction completed by: {final_reduction_finish}")
-            st.success(f"Sorting + Reduction + Drying completed by: {final_drying_finish}")
-            st.success(f"Sorting + Reduction + Drying + Crushing completed by: {final_crushing_finish}")
-            st.success(f"Sorting + Reduction + Drying + Crushing + Pulverizing & Sieving completed by: {final_pulverizing_finish}")
-            
-            st.subheader("Summary by Sample Type")
-
-            summary_df = (
-                df.groupby("Type")
-                .agg(
-                    Total_Samples_Processed=("Qty", "sum"),
-                    Receipt_Time=("Receipt Time", "min"),
-                    Sorting_End=("Sorting End", "min"),
-                    First_Reduction_Start=("Start", "min"),
-                    Final_Reduction_Finish=("Finish", "max"),
-                    Total_Cycles=("Cycle No.", "max"),
-                    Total_Reduction_Minutes=("Duration Minutes", "sum"),
-                    Max_Personnel_Used_At_One_Time=("Personnel", "max"),
-                )
-                .reset_index()
-            )
-            if not drying_df.empty:
-                drying_summary = drying_df.groupby("Type").agg(
-                    First_Drying_Start=("Start", "min"),
-                    Final_Drying_Finish=("Finish", "max"),
-                ).reset_index()
-                drying_summary["Total_Drying_Minutes"] = (
-                    (drying_summary["Final_Drying_Finish"] - drying_summary["First_Drying_Start"])
-                    .dt.total_seconds() // 60
-                ).astype(int)
-                summary_df = summary_df.merge(drying_summary, on="Type", how="left")
-
-            if not crushing_df.empty:
-                # Total crushing minutes = elapsed window from first crushing start to last crushing finish per sample type.
-                # This is intentionally not a cumulative sum of batch durations.
-                crushing_summary = crushing_df.groupby("Type").agg(
-                    First_Crushing_Start=("Start", "min"),
-                    Final_Crushing_Finish=("Finish", "max"),
-                ).reset_index()
-                crushing_summary["Total_Crushing_Minutes"] = (
-                    (crushing_summary["Final_Crushing_Finish"] - crushing_summary["First_Crushing_Start"])
-                    .dt.total_seconds()
-                    .div(60)
-                    .round()
-                    .astype(int)
-                )
-                summary_df = summary_df.merge(crushing_summary, on="Type", how="left")
-
-            if not pulverizing_df.empty:
-                pulverizing_summary = pulverizing_df.groupby("Type").agg(
-                    First_PulvSieving_Start=("Start", "min"),
-                    Final_PulvSieving_Finish=("Finish", "max"),
-                ).reset_index()
-                pulverizing_summary["Total_PulvSieving_Minutes"] = (
-                    (pulverizing_summary["Final_PulvSieving_Finish"] - pulverizing_summary["First_PulvSieving_Start"])
-                    .dt.total_seconds().div(60).round().astype(int)
-                )
-                summary_df = summary_df.merge(pulverizing_summary, on="Type", how="left")
-
-            st.dataframe(summary_df, use_container_width=True)
-
-            st.subheader("Overall Step Gantt by Sample Type")
-            overall_rows = []
-            for sample_type in summary_df["Type"]:
-                type_rows = df[df["Type"] == sample_type]
-                if type_rows.empty:
-                    continue
-                sorting_start = type_rows["Receipt Time"].min()
-                sorting_end = type_rows["Sorting End"].min()
-                reduction_start = type_rows["Start"].min()
-                reduction_end = type_rows["Finish"].max()
-
-                overall_rows.append({"Type": sample_type, "Step": "Sorting", "Start": sorting_start, "Finish": sorting_end})
-                overall_rows.append({"Type": sample_type, "Step": "Reduction", "Start": reduction_start, "Finish": reduction_end})
-
-                drows = drying_df[drying_df["Type"] == sample_type]
-                if not drows.empty:
-                    overall_rows.append({"Type": sample_type, "Step": "Drying", "Start": drows["Start"].min(), "Finish": drows["Finish"].max()})
-
-                crows = crushing_df[crushing_df["Type"] == sample_type]
-                if not crows.empty:
-                    overall_rows.append({"Type": sample_type, "Step": "Crushing", "Start": crows["Start"].min(), "Finish": crows["Finish"].max()})
-
-                prows = pulverizing_df[pulverizing_df["Type"] == sample_type]
-                if not prows.empty:
-                    overall_rows.append({"Type": sample_type, "Step": "Pulverizing & Sieving", "Start": prows["Start"].min(), "Finish": prows["Finish"].max()})
-
-            if overall_rows:
-                overall_df = pd.DataFrame(overall_rows)
-                fig_overall = px.timeline(overall_df, x_start="Start", x_end="Finish", y="Type", color="Step", text="Step")
-                fig_overall.update_yaxes(autorange="reversed")
-                fig_overall.update_layout(height=500, xaxis_title="Time", yaxis_title="Sample Type")
-                st.plotly_chart(fig_overall, use_container_width=True)
-                
-            st.subheader("Plate Gantt Chart")
-
-            gantt_rows = []
-
-            for _, row in df.iterrows():
-                plates = row["Plate"].split(", ")
-                total_qty = row["Qty"]
-                plate_count = len(plates)
-
-                base_qty = total_qty // plate_count
-                remainder = total_qty % plate_count
-
-                for i, plate in enumerate(plates):
-                    qty_on_plate = base_qty + (1 if i < remainder else 0)
-
-                    gantt_rows.append({
-                        "Plate": plate,
-                        "Task": row["Type"],
-                        "Start": row["Start"],
-                        "Finish": row["Finish"],
-                        "Label": f"{row['Type']} ({qty_on_plate})",
-                        "Cycle No.": row["Cycle No."],
-                        "Personnel": row["Personnel"],
-                    })
-
-            gantt_df = pd.DataFrame(gantt_rows)
-
-            color_map = {
-                "Mine": "green",
-                "Sublot": "orange",
-                "Face": "blue",
-                "Lot Quality": "red",
-            }
-
-            fig = px.timeline(
-                gantt_df,
-                x_start="Start",
-                x_end="Finish",
-                y="Plate",
-                color="Task",
-                text="Label",
-                color_discrete_map=color_map,
-                hover_data={
-                    "Cycle No.": True,
-                    "Personnel": True,
-                    "Start": True,
-                    "Finish": True,
+            pulv_rows.append(
+                {
+                    "Batch": bid,
+                    "Type": b["sample_type"],
+                    "Qty": q_m,
+                    "Machine": m,
+                    "Start": p_start,
+                    "Finish": p_finish,
                 }
             )
 
-            fig.update_yaxes(autorange="reversed")
-            fig.update_traces(textposition="inside", textfont_size=12)
+    red_df = pd.DataFrame(reduction_rows)
+    dry_df = pd.DataFrame(drying_rows)
+    crush_df = pd.DataFrame(crushing_rows)
+    pulv_df = pd.DataFrame(pulv_rows)
 
-            fig.update_layout(
-                height=700,
-                xaxis_title="Time",
-                yaxis_title="Working Plate",
+    overall_rows = []
+    for bid in red_df["Batch"].unique():
+        rt = red_df[red_df["Batch"] == bid].iloc[0]
+        overall_rows.extend(
+            [
+                {
+                    "Batch": bid,
+                    "Type": rt["Type"],
+                    "Step": "Sorting",
+                    "Start": rt["Sorting Start"],
+                    "Finish": rt["Sorting End"],
+                },
+                {
+                    "Batch": bid,
+                    "Type": rt["Type"],
+                    "Step": "Reduction",
+                    "Start": rt["Reduction Start"],
+                    "Finish": rt["Reduction Finish"],
+                },
+            ]
+        )
+
+        d = dry_df[dry_df["Batch"] == bid]
+        c = crush_df[crush_df["Batch"] == bid]
+        p = pulv_df[pulv_df["Batch"] == bid]
+
+        if not d.empty:
+            overall_rows.append(
+                {
+                    "Batch": bid,
+                    "Type": rt["Type"],
+                    "Step": "Drying",
+                    "Start": d["Start"].min(),
+                    "Finish": d["Finish"].max(),
+                }
+            )
+        if not c.empty:
+            overall_rows.append(
+                {
+                    "Batch": bid,
+                    "Type": rt["Type"],
+                    "Step": "Crushing",
+                    "Start": c["Start"].min(),
+                    "Finish": c["Finish"].max(),
+                }
+            )
+        if not p.empty:
+            overall_rows.append(
+                {
+                    "Batch": bid,
+                    "Type": rt["Type"],
+                    "Step": "Pulverizing & Sieving",
+                    "Start": p["Start"].min(),
+                    "Finish": p["Finish"].max(),
+                }
             )
 
-            st.plotly_chart(fig, use_container_width=True)
+    overall_df = pd.DataFrame(overall_rows)
+    return red_df, dry_df, crush_df, pulv_df, overall_df
 
-            st.subheader("Drying Oven Gantt Chart")
-            drying_rows = []
-            sample_short = {"Face": "FS", "Mine": "MS", "Sublot": "SS", "Lot Quality": "LQ"}
-            for _, row in drying_df.iterrows():
-                for slot in row["Shelf Allocations"]:
-                    oven_name, shelf_name = slot.split("-Shelf ")
-                    oven_num = oven_name.split(" ")[-1]
-                    label = f"{sample_short.get(row['Type'], row['Type'][:2].upper())} {oven_num}-{shelf_name}"
-                    drying_rows.append({
-                        "Oven": oven_name,
-                        "Shelf Slot": slot,
-                        "Task": row["Type"],
-                        "Start": row["Start"],
-                        "Finish": row["Finish"],
-                        "Label": label,
-                    })
 
-            if drying_rows:
-                drying_gantt_df = pd.DataFrame(drying_rows)
-                fig_dry = px.timeline(
-                    drying_gantt_df,
-                    x_start="Start",
-                    x_end="Finish",
-                    y="Shelf Slot",
-                    color="Task",
-                    text="Label",
-                    color_discrete_map=color_map,
+if st.button("Recalculate Full Schedule") or st.session_state.batches:
+    red_df, dry_df, crush_df, pulv_df, overall_df = schedule_batches(st.session_state.batches)
+
+    if overall_df.empty:
+        st.warning("No batches to schedule.")
+    else:
+        st.subheader("Overall Step Gantt by Batch")
+        overall_df["Label"] = overall_df["Batch"] + " - " + overall_df["Type"]
+        fig_overall = px.timeline(overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step")
+        fig_overall.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_overall, use_container_width=True)
+
+        st.subheader("Reduction Plate Gantt")
+        fig_plate = px.timeline(
+            red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Type", text="Batch"
+        )
+        fig_plate.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_plate, use_container_width=True)
+
+        st.subheader("Drying Oven Shelf Gantt")
+        dry_plot = []
+        for _, r in dry_df.iterrows():
+            for slot in r["Slots"]:
+                dry_plot.append(
+                    {"Slot": slot, "Batch": r["Batch"], "Type": r["Type"], "Start": r["Start"], "Finish": r["Finish"]}
                 )
-                fig_dry.update_yaxes(autorange="reversed")
-                fig_dry.update_layout(height=650, xaxis_title="Time", yaxis_title="Drying Oven Shelf")
-                st.plotly_chart(fig_dry, use_container_width=True)
+        dry_plot_df = pd.DataFrame(dry_plot)
+        fig_dry = px.timeline(dry_plot_df, x_start="Start", x_end="Finish", y="Slot", color="Type", text="Batch")
+        fig_dry.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_dry, use_container_width=True)
 
-            st.subheader("Crushing Gantt Chart")
-            if not crushing_df.empty:
-                crushing_plot_df = crushing_df.copy()
-                crushing_plot_df["Lane"] = crushing_plot_df.apply(
-                    lambda r: f"{r['Type']} B{r['Batch No']} (P{r['Assigned Personnel']})", axis=1
-                )
-                fig_crush = px.timeline(
-                    crushing_plot_df,
-                    x_start="Start",
-                    x_end="Finish",
-                    y="Lane",
-                    color="Type",
-                    text="Qty",
-                    color_discrete_map=color_map,
-                    hover_data={"Assigned Personnel": True, "Qty": True, "Drying Finish": True}
-                )
-                fig_crush.update_yaxes(autorange="reversed")
-                fig_crush.update_layout(height=500, xaxis_title="Time", yaxis_title="Crushing Allocation")
-                st.plotly_chart(fig_crush, use_container_width=True)
+        st.subheader("Crushing Gantt")
+        crush_df["Lane"] = crush_df.apply(lambda x: f"{x['Batch']} ({x['Personnel']}P)", axis=1)
+        fig_cr = px.timeline(crush_df, x_start="Start", x_end="Finish", y="Lane", color="Type", text="Qty")
+        fig_cr.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_cr, use_container_width=True)
 
-            st.subheader("Pulverizing & Sieving Gantt Chart")
-            if not pulverizing_df.empty:
-                fig_pulv = px.timeline(
-                    pulverizing_df,
-                    x_start="Start",
-                    x_end="Finish",
-                    y="Machine",
-                    color="Type",
-                    text="Qty",
-                    color_discrete_map=color_map,
-                    hover_data={"Batch No": True, "Crushing Finish": True}
-                )
-                fig_pulv.update_yaxes(autorange="reversed")
-                fig_pulv.update_layout(height=450, xaxis_title="Time", yaxis_title="Pulverizer / Sieving Station")
-                st.plotly_chart(fig_pulv, use_container_width=True)
-                
-    except Exception as e:
-        st.error(f"Error: {e}")
+        st.subheader("Pulverizing & Sieving Gantt")
+        fig_p = px.timeline(pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+        fig_p.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_p, use_container_width=True)
 
-else:
-    st.info("Enter inputs then click Generate Optimized Schedule.")
+        st.subheader("Batch Completion Summary")
+        finals = overall_df.groupby(["Batch", "Type"]).agg(Start=("Start", "min"), Finish=("Finish", "max")).reset_index()
+        finals["Total Duration Minutes"] = ((finals["Finish"] - finals["Start"]).dt.total_seconds() / 60).round().astype(int)
+        st.dataframe(finals, use_container_width=True)
+
+        st.subheader("Summary per Processing Step")
+        step_summary = overall_df.groupby("Step").agg(First_Start=("Start", "min"), Last_Finish=("Finish", "max")).reset_index()
+        step_summary["Total Window Minutes"] = (
+            (step_summary["Last_Finish"] - step_summary["First_Start"]).dt.total_seconds() / 60
+        ).round().astype(int)
+        st.dataframe(step_summary, use_container_width=True)
+
+        st.success(f"Overall estimated completion time: {overall_df['Finish'].max()}")
