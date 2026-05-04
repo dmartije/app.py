@@ -8,7 +8,7 @@ import plotly.express as px
 import streamlit as st
 
 st.set_page_config(page_title="Sample Scheduler", layout="wide")
-st.title("Sample Preparation Optimizer")
+st.title("Sample Workflow Optimizer")
 
 # Global scheduling constraints.
 TIME_UNIT = 5
@@ -74,6 +74,7 @@ window_end = st.sidebar.time_input("Higher-capacity window end", value=datetime(
 ovens_high = st.sidebar.selectbox("Ovens operating during higher-capacity window", [1, 2], index=1)
 ovens_low = st.sidebar.selectbox("Ovens operating outside that window", [1, 2], index=0)
 pulverizer_count = st.sidebar.selectbox("Pulverizers operating", [1, 2], index=1)
+xrf_machine_count = st.sidebar.selectbox("XRF machines operating", [1, 2], index=1)
 solver_time_limit = st.sidebar.slider("Solver Time Limit (seconds)", min_value=3, max_value=60, value=15)
 
 # Persist batches across Streamlit reruns.
@@ -138,7 +139,16 @@ def schedule_batches(batches):
     4) Pulverizing/sieving (machine constrained)
     """
     if not batches:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+        )
 
     reduction_rows, drying_rows, crushing_rows, pulv_rows = [], [], [], []
 
@@ -372,7 +382,113 @@ def schedule_batches(batches):
             )
 
     overall_df = pd.DataFrame(overall_rows)
-    return red_df, dry_df, crush_df, pulv_df, overall_df
+
+    # --- Weighing (2 balances, priority-aware), Pelletizing, XRF allocation ---
+    cool_steps = overall_df[overall_df["Step"] == "Cooling in Desiccator"].copy()
+    batch_lookup = {b["batch_id"]: b for b in batches}
+    weighing_tasks = []
+    for _, row in cool_steps.iterrows():
+        qty = int(batch_lookup[row["Batch"]]["qty"])
+        for sample_idx in range(1, qty + 1):
+            weighing_tasks.append(
+                {
+                    "Batch": row["Batch"],
+                    "Type": row["Type"],
+                    "Sample": sample_idx,
+                    "ready": row["Finish"],
+                }
+            )
+
+    balances = {f"Balance {i}": pd.Timestamp.min for i in range(1, 3)}
+    weighing_rows = []
+
+    def task_priority(t):
+        return (0 if t["Type"] == "Sublot" else 1, t["ready"], t["Batch"], t["Sample"])
+
+    pending = weighing_tasks[:]
+    while pending:
+        machine = min(balances, key=lambda m: balances[m])
+        current_t = balances[machine]
+        ready = [t for t in pending if t["ready"] <= current_t]
+        if not ready:
+            next_ready = min(t["ready"] for t in pending)
+            current_t = max(current_t, next_ready)
+            ready = [t for t in pending if t["ready"] <= current_t]
+        chosen = sorted(ready, key=task_priority)[0]
+        start_t = current_t
+        finish_t = start_t + timedelta(minutes=2)
+        balances[machine] = finish_t
+        pending.remove(chosen)
+        weighing_rows.append(
+            {
+                "Batch": chosen["Batch"],
+                "Type": chosen["Type"],
+                "Sample": chosen["Sample"],
+                "Balance": machine,
+                "Start": start_t,
+                "Finish": finish_t,
+            }
+        )
+
+    weighing_df = pd.DataFrame(weighing_rows).sort_values("Finish")
+
+    pellet_rows = []
+    pellet_free = pd.Timestamp.min
+    for _, w in weighing_df.iterrows():
+        p_start = max(pellet_free, w["Finish"])
+        p_finish = p_start + timedelta(minutes=3)
+        pellet_free = p_finish
+        pellet_rows.append(
+            {
+                "Batch": w["Batch"],
+                "Type": w["Type"],
+                "Sample": w["Sample"],
+                "Start": p_start,
+                "Finish": p_finish,
+                "Machine": "Pelletizer 1",
+            }
+        )
+    pellet_df = pd.DataFrame(pellet_rows)
+
+    xrf_rows = []
+    xrf_free = {f"XRF {i}": pd.Timestamp.min for i in range(1, int(xrf_machine_count) + 1)}
+    for batch_id, grp in pellet_df.groupby("Batch"):
+        grp = grp.sort_values("Finish")
+        sample_finishes = list(grp["Finish"])
+        batch_type = grp["Type"].iloc[0]
+        for chunk_idx in range(0, len(sample_finishes), 10):
+            chunk_samples = min(10, len(sample_finishes) - chunk_idx)
+            ready_t = sample_finishes[chunk_idx + chunk_samples - 1]
+            machine = min(xrf_free, key=lambda m: max(xrf_free[m], ready_t))
+            x_start = max(xrf_free[machine], ready_t)
+            x_finish = x_start + timedelta(minutes=30)
+            xrf_free[machine] = x_finish
+            xrf_rows.append(
+                {
+                    "Batch": batch_id,
+                    "Type": batch_type,
+                    "Chunk": f"{chunk_idx + 1}-{chunk_idx + chunk_samples}",
+                    "Samples": chunk_samples,
+                    "Machine": machine,
+                    "Start": x_start,
+                    "Finish": x_finish,
+                }
+            )
+    xrf_df = pd.DataFrame(xrf_rows)
+
+    for bid in overall_df["Batch"].unique():
+        w = weighing_df[weighing_df["Batch"] == bid]
+        pel = pellet_df[pellet_df["Batch"] == bid]
+        x = xrf_df[xrf_df["Batch"] == bid]
+        batch_type = overall_df[overall_df["Batch"] == bid]["Type"].iloc[0]
+        if not w.empty:
+            overall_df.loc[len(overall_df)] = [bid, batch_type, "Weighing", w["Start"].min(), w["Finish"].max()]
+        if not pel.empty:
+            overall_df.loc[len(overall_df)] = [bid, batch_type, "Pelletizing", pel["Start"].min(), pel["Finish"].max()]
+        if not x.empty:
+            overall_df.loc[len(overall_df)] = [bid, batch_type, "XRF Analysis", x["Start"].min(), x["Finish"].max()]
+
+    return red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df
 
 
 def optimize_batch_order(batches, time_limit_seconds):
@@ -398,7 +514,7 @@ def optimize_batch_order(batches, time_limit_seconds):
 
     for perm in permutations(base):
         tested += 1
-        _, _, _, _, overall_df = schedule_batches(list(perm))
+        _, _, _, _, overall_df, _, _, _ = schedule_batches(list(perm))
         finish = overall_df["Finish"].max() if not overall_df.empty else pd.Timestamp.min
         if best_finish is None or finish < best_finish:
             best_finish = finish
@@ -412,7 +528,7 @@ def optimize_batch_order(batches, time_limit_seconds):
 
 if st.button("Recalculate Full Schedule") or st.session_state.batches:
     best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches, solver_time_limit)
-    red_df, dry_df, crush_df, pulv_df, overall_df = schedule_batches(best_order)
+    red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df = schedule_batches(best_order)
 
     if overall_df.empty:
         st.warning("No batches to schedule.")
@@ -437,6 +553,9 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
             "Laboratory Sorting",
             "Laboratory Drying",
             "Cooling in Desiccator",
+            "Weighing",
+            "Pelletizing",
+            "XRF Analysis",
         ]
         step_batch_summary = overall_df.copy()
         step_batch_summary["Step"] = pd.Categorical(step_batch_summary["Step"], categories=step_order, ordered=True)
@@ -498,5 +617,20 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
         fig_p = px.timeline(pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
         fig_p.update_yaxes(autorange="reversed")
         st.plotly_chart(fig_p, use_container_width=True)
+
+        st.subheader("Weighing Chart")
+        fig_w = px.timeline(weighing_df, x_start="Start", x_end="Finish", y="Balance", color="Type", text="Batch")
+        fig_w.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_w, use_container_width=True)
+
+        st.subheader("Pelletizing Chart")
+        fig_pel = px.timeline(pellet_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+        fig_pel.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_pel, use_container_width=True)
+
+        st.subheader("XRF Allocation Chart")
+        fig_xrf = px.timeline(xrf_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+        fig_xrf.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig_xrf, use_container_width=True)
 
         st.success(f"Overall estimated completion time: {overall_df['Finish'].max()}")
