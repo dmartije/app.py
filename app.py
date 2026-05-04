@@ -63,7 +63,7 @@ rules = {
         "reduction_personnel": 1,
         "plate_capacity": 1,
         "sorting_minutes": 30,
-        "drying_minutes": 480,
+        "drying_minutes": 360,
         "drying_per_shelf": 1,
         "crushing_per_sample": 10,
         "pulv_per_sample": 15,
@@ -89,6 +89,10 @@ st.sidebar.subheader("Append Batch")
 with st.sidebar.form("add_batch_form", clear_on_submit=True):
     new_batch_id = st.text_input("Batch Number / Sample ID", value="")
     new_type = st.selectbox("Sample Type", list(rules.keys()))
+    subcat_options = ["N/A"]
+    if new_type in ["Mine", "Sublot"]:
+        subcat_options = ["Limonite", "Saprolite"]
+    new_subcategory = st.selectbox("Subcategory", subcat_options)
     new_qty = st.number_input("Number of Samples", min_value=1, max_value=10000, value=1)
     new_received = st.datetime_input("Date and Time Received", value=datetime(2026, 5, 4, 8, 0))
     add_clicked = st.form_submit_button("Add Batch")
@@ -99,6 +103,7 @@ if add_clicked and new_batch_id.strip():
             "batch_id": new_batch_id.strip(),
             "sample_type": new_type,
             "qty": int(new_qty),
+            "subcategory": new_subcategory,
             "received_at": pd.Timestamp(new_received),
         }
     )
@@ -169,13 +174,42 @@ def schedule_batches(batches):
         r = rules[b["sample_type"]]
         bid = b["batch_id"]
         qty = int(b["qty"])
+        subcategory = b.get("subcategory", "N/A")
         recv = pd.Timestamp(b["received_at"])
 
         sorting_start = recv
         sorting_end = recv + timedelta(minutes=r["sorting_minutes"])
 
-        # Find first time where enough plates are free for reduction.
+        # Optional pre-drying for Lot Quality before reduction.
         red_start = sorting_end
+        if b["sample_type"] == "Lot Quality":
+            pre_start = sorting_end
+            pre_duration = timedelta(minutes=240)
+            pre_slots = []
+            while not pre_slots:
+                ovens = ovens_available(pre_start)
+                candidates = [f"Oven {i}" for i in range(1, ovens + 1)]
+                active_slots = []
+                for dj in oven_jobs:
+                    if not (pre_start + pre_duration <= dj["start"] or pre_start >= dj["finish"]):
+                        active_slots.extend(dj["slots"])
+                free_slots = []
+                for o in candidates:
+                    for shelf in range(1, SHELVES_PER_OVEN + 1):
+                        slot = f"{o}-Shelf {shelf}"
+                        if slot not in active_slots:
+                            free_slots.append(slot)
+                pre_slots = free_slots[:1]
+                if not pre_slots:
+                    pre_start += timedelta(minutes=TIME_UNIT)
+            pre_finish = pre_start + pre_duration
+            oven_jobs.append({"start": pre_start, "finish": pre_finish, "slots": pre_slots})
+            drying_rows.append(
+                {"Batch": bid, "Type": b["sample_type"], "Qty": qty, "Step": "Pre-Drying", "Start": pre_start, "Finish": pre_finish, "Slots": pre_slots}
+            )
+            red_start = pre_finish
+
+        # Find first time where enough plates are free for reduction.
         while True:
             plates_need = math.ceil(qty / r["plate_capacity"])
             plates_need = min(plates_need, TOTAL_PLATES)
@@ -187,7 +221,13 @@ def schedule_batches(batches):
                 break
             red_start += timedelta(minutes=TIME_UNIT)
 
-        red_finish = red_start + timedelta(minutes=r["reduction_minutes"])
+        if b["sample_type"] in ["Mine", "Sublot"]:
+            reduction_per_sample = 10 if (b["sample_type"] == "Mine" and subcategory == "Limonite") else \
+                15 if (b["sample_type"] == "Mine" and subcategory == "Saprolite") else \
+                30 if (b["sample_type"] == "Sublot" and subcategory == "Limonite") else 45
+        else:
+            reduction_per_sample = r["reduction_minutes"]
+        red_finish = red_start + timedelta(minutes=qty * reduction_per_sample)
         used_plates = free_plates[:plates_need]
         for p in used_plates:
             plate_free[p] = red_finish
@@ -202,6 +242,7 @@ def schedule_batches(batches):
                 "Reduction Start": red_start,
                 "Reduction Finish": red_finish,
                 "Personnel": personnel_need,
+                "Subcategory": subcategory,
                 "Plate": ", ".join(used_plates),
             }
         )
@@ -241,6 +282,7 @@ def schedule_batches(batches):
                 "Qty": qty,
                 "Start": dry_start,
                 "Finish": dry_finish,
+                "Step": "Drying",
                 "Slots": assigned_slots,
             }
         )
@@ -323,15 +365,22 @@ def schedule_batches(batches):
         p = pulv_df[pulv_df["Batch"] == bid]
 
         if not d.empty:
-            overall_rows.append(
-                {
-                    "Batch": bid,
-                    "Type": rt["Type"],
-                    "Step": "Drying",
-                    "Start": d["Start"].min(),
-                    "Finish": d["Finish"].max(),
-                }
-            )
+            pre = d[d["Step"] == "Pre-Drying"]
+            if not pre.empty:
+                overall_rows.append(
+                    {"Batch": bid, "Type": rt["Type"], "Step": "Pre-Drying", "Start": pre["Start"].min(), "Finish": pre["Finish"].max()}
+                )
+            d_final = d[d["Step"] == "Drying"]
+            if not d_final.empty:
+                overall_rows.append(
+                    {
+                        "Batch": bid,
+                        "Type": rt["Type"],
+                        "Step": "Drying",
+                        "Start": d_final["Start"].min(),
+                        "Finish": d_final["Finish"].max(),
+                    }
+                )
         if not c.empty:
             overall_rows.append(
                 {
@@ -564,7 +613,7 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
         st.caption(solver_message)
 
         st.subheader("Batch Completion Summary")
-        sample_prep_steps = ["Sorting", "Reduction", "Drying", "Crushing", "Pulverizing & Sieving"]
+        sample_prep_steps = ["Sorting", "Pre-Drying", "Reduction", "Drying", "Crushing", "Pulverizing & Sieving"]
         lab_steps = [
             "Laboratory Sorting",
             "Laboratory Drying",
@@ -619,14 +668,26 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
             {
                 "Process Step": "Reduction",
                 "Face": rules["Face"]["reduction_minutes"],
-                "Mine": rules["Mine"]["reduction_minutes"],
-                "Sublot": rules["Sublot"]["reduction_minutes"],
+                "Mine": "10 (Limonite) / 15 (Saprolite)",
+                "Sublot": "30 (Limonite) / 45 (Saprolite)",
                 "Lot Quality": rules["Lot Quality"]["reduction_minutes"],
-                "Time per Sample (min/sample)": "",
-                "Time per Batch (min/batch)": "See sample-type columns",
-                "Processing Basis": "Per Batch",
+                "Time per Sample (min/sample)": "Subcategory-based (Mine/Sublot)",
+                "Time per Batch (min/batch)": "qty × min/sample",
+                "Processing Basis": "Per Sample",
                 "Resource Used": "Personnel / Plate",
-                "Notes": f"Personnel headcount constrained by user input ({personnel_total}).",
+                "Notes": f"Mine/Sublot reduction is subcategory-driven; personnel constrained by input ({personnel_total}).",
+            },
+            {
+                "Process Step": "Pre-Drying (Lot Quality)",
+                "Face": "N/A",
+                "Mine": "N/A",
+                "Sublot": "N/A",
+                "Lot Quality": 240,
+                "Time per Sample (min/sample)": "",
+                "Time per Batch (min/batch)": "240",
+                "Processing Basis": "Per Batch",
+                "Resource Used": "Oven",
+                "Notes": "Added before Reduction for Lot Quality only.",
             },
             {
                 "Process Step": "Drying",
@@ -742,6 +803,7 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
         st.subheader("Summary per Processing Step (per Batch)")
         step_order = [
             "Sorting",
+            "Pre-Drying",
             "Reduction",
             "Drying",
             "Crushing",
