@@ -9,7 +9,7 @@ import plotly.express as px
 import streamlit as st
 
 st.set_page_config(page_title="Sample Scheduler", layout="wide")
-st.title("Sample Preparation Optimizer")
+st.title("Sample Workflow Optimizer")
 PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
 st.caption(f"Current Philippine Time: {ph_now.strftime('%Y-%m-%d %I:%M:%S %p')}")
@@ -602,6 +602,143 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
         finals["Status"] = finals["Batch"].map(statuses).fillna("Waiting to Start")
         st.dataframe(finals, use_container_width=True)
 
+        st.subheader("Process Time Specifications (Per Sample / Per Batch View)")
+        spec_rows = [
+            {
+                "Process Step": "Sorting",
+                "Face": rules["Face"]["sorting_minutes"],
+                "Mine": rules["Mine"]["sorting_minutes"],
+                "Sublot": rules["Sublot"]["sorting_minutes"],
+                "Lot Quality": rules["Lot Quality"]["sorting_minutes"],
+                "Time per Sample (min/sample)": "",
+                "Time per Batch (min/batch)": "See sample-type columns",
+                "Processing Basis": "Per Batch",
+                "Resource Used": "Personnel",
+                "Notes": "Fixed per batch by sample type.",
+            },
+            {
+                "Process Step": "Reduction",
+                "Face": rules["Face"]["reduction_minutes"],
+                "Mine": rules["Mine"]["reduction_minutes"],
+                "Sublot": rules["Sublot"]["reduction_minutes"],
+                "Lot Quality": rules["Lot Quality"]["reduction_minutes"],
+                "Time per Sample (min/sample)": "",
+                "Time per Batch (min/batch)": "See sample-type columns",
+                "Processing Basis": "Per Batch",
+                "Resource Used": "Personnel / Plate",
+                "Notes": f"Personnel headcount constrained by user input ({personnel_total}).",
+            },
+            {
+                "Process Step": "Drying",
+                "Face": rules["Face"]["drying_minutes"],
+                "Mine": rules["Mine"]["drying_minutes"],
+                "Sublot": rules["Sublot"]["drying_minutes"],
+                "Lot Quality": rules["Lot Quality"]["drying_minutes"],
+                "Time per Sample (min/sample)": "",
+                "Time per Batch (min/batch)": "",
+                "Processing Basis": "Per Cycle",
+                "Resource Used": "Oven",
+                "Notes": f"Cycle time fixed; capacity varies by oven window ({ovens_high}/{ovens_low} ovens).",
+            },
+            {
+                "Process Step": "Crushing",
+                "Face": rules["Face"]["crushing_per_sample"],
+                "Mine": rules["Mine"]["crushing_per_sample"],
+                "Sublot": rules["Sublot"]["crushing_per_sample"],
+                "Lot Quality": rules["Lot Quality"]["crushing_per_sample"],
+                "Time per Sample (min/sample)": "See sample-type columns",
+                "Time per Batch (min/batch)": "",
+                "Processing Basis": "Per Sample",
+                "Resource Used": "Personnel",
+                "Notes": f"Parallelized by available personnel ({personnel_total} max).",
+            },
+            {
+                "Process Step": "Pulverizing & Sieving",
+                "Face": rules["Face"]["pulv_per_sample"],
+                "Mine": rules["Mine"]["pulv_per_sample"],
+                "Sublot": rules["Sublot"]["pulv_per_sample"],
+                "Lot Quality": rules["Lot Quality"]["pulv_per_sample"],
+                "Time per Sample (min/sample)": "See sample-type columns",
+                "Time per Batch (min/batch)": "",
+                "Processing Basis": "Per Sample",
+                "Resource Used": "Pulverizer",
+                "Notes": f"Distributed in parallel across {pulverizer_count} pulverizer(s).",
+            },
+            {
+                "Process Step": "Laboratory Sorting",
+                "Face": 10,
+                "Mine": 10,
+                "Sublot": 10,
+                "Lot Quality": 10,
+                "Time per Sample (min/sample)": "",
+                "Time per Batch (min/batch)": "10",
+                "Processing Basis": "Per Batch",
+                "Resource Used": "Personnel",
+                "Notes": "Fixed per batch.",
+            },
+            {
+                "Process Step": "Laboratory Drying",
+                "Face": rules["Face"]["lab_drying_minutes"],
+                "Mine": rules["Mine"]["lab_drying_minutes"],
+                "Sublot": rules["Sublot"]["lab_drying_minutes"],
+                "Lot Quality": rules["Lot Quality"]["lab_drying_minutes"],
+                "Time per Sample (min/sample)": "",
+                "Time per Batch (min/batch)": "See sample-type columns",
+                "Processing Basis": "Per Batch",
+                "Resource Used": "Oven",
+                "Notes": "Fixed by sample type.",
+            },
+            {
+                "Process Step": "Cooling in Desiccator",
+                "Face": 45,
+                "Mine": 45,
+                "Sublot": 45,
+                "Lot Quality": 45,
+                "Time per Sample (min/sample)": "",
+                "Time per Batch (min/batch)": "45",
+                "Processing Basis": "Per Batch",
+                "Resource Used": "Desiccator",
+                "Notes": "Fixed per batch.",
+            },
+            {
+                "Process Step": "Weighing",
+                "Face": 2,
+                "Mine": 2,
+                "Sublot": 2,
+                "Lot Quality": 2,
+                "Time per Sample (min/sample)": "2",
+                "Time per Batch (min/batch)": "",
+                "Processing Basis": "Per Sample",
+                "Resource Used": "Balance",
+                "Notes": "Two balances in parallel; Sublot prioritized when ready.",
+            },
+            {
+                "Process Step": "Pelletizing",
+                "Face": 3,
+                "Mine": 3,
+                "Sublot": 3,
+                "Lot Quality": 3,
+                "Time per Sample (min/sample)": "3",
+                "Time per Batch (min/batch)": "",
+                "Processing Basis": "Per Sample",
+                "Resource Used": "Pelletizer",
+                "Notes": "Single pelletizer, serialized.",
+            },
+            {
+                "Process Step": "XRF Analysis",
+                "Face": 30,
+                "Mine": 30,
+                "Sublot": 30,
+                "Lot Quality": 30,
+                "Time per Sample (min/sample)": "",
+                "Time per Batch (min/batch)": "",
+                "Processing Basis": "Per 10 Samples",
+                "Resource Used": "XRF Machine",
+                "Notes": f"30 min per 10-sample run; parallel across {xrf_machine_count} XRF machine(s).",
+            },
+        ]
+        st.dataframe(pd.DataFrame(spec_rows), use_container_width=True)
+
         st.subheader("Summary per Processing Step (per Batch)")
         step_order = [
             "Sorting",
@@ -636,10 +773,7 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
 
         st.subheader("Overall Sample Prep and Laboratory Process Chart")
         overall_df["Label"] = overall_df["Batch"] + " - " + overall_df["Type"]
-        active_overall_df = overall_df[overall_df["Finish"] > ph_now].copy()
-        fig_overall = px.timeline(
-            active_overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step"
-        )
+        fig_overall = px.timeline(overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step")
         fig_overall.update_yaxes(autorange="reversed")
         fig_overall.update_yaxes(title_text="Batch No.")
         st.plotly_chart(fig_overall, use_container_width=True)
