@@ -385,7 +385,9 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
         st.caption(solver_message)
 
         st.subheader("Batch Completion Summary")
-        finals = overall_df.groupby(["Batch", "Type"]).agg(Start=("Start", "min"), Finish=("Finish", "max")).reset_index()
+        finals["Estimated Sample Prep Hours"] = (
+            ((finals["Finish"] - finals["Start"]).dt.total_seconds() / 3600).round(2)
+        )
         finals["Total Duration Hours"] = (((finals["Finish"] - finals["Start"]).dt.total_seconds() / 3600).round(2))
         st.dataframe(finals, use_container_width=True)
 
@@ -409,20 +411,21 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
             use_container_width=True,
         )
 
-        st.subheader("Overall Step Gantt by Batch")
+        st.subheader("Overall Sample Prep and Laboratory Process Chart")
         overall_df["Label"] = overall_df["Batch"] + " - " + overall_df["Type"]
         fig_overall = px.timeline(overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step")
         fig_overall.update_yaxes(autorange="reversed")
+        fig_overall.update_yaxes(title_text="Batch No.")
         st.plotly_chart(fig_overall, use_container_width=True)
 
-        st.subheader("Reduction Plate Gantt")
+        st.subheader("Plate Allocation")
         fig_plate = px.timeline(
             red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Type", text="Batch"
         )
         fig_plate.update_yaxes(autorange="reversed")
         st.plotly_chart(fig_plate, use_container_width=True)
 
-        st.subheader("Drying Oven Shelf Gantt")
+        st.subheader("Drying Oven Allocation")
         dry_plot = []
         for _, r in dry_df.iterrows():
             for slot in r["Slots"]:
@@ -440,13 +443,13 @@ if st.button("Recalculate Full Schedule") or st.session_state.batches:
         fig_dry.update_yaxes(autorange="reversed")
         st.plotly_chart(fig_dry, use_container_width=True)
 
-        st.subheader("Crushing Gantt")
+        st.subheader("Crushing Personnel Allocation")
         crush_df["Lane"] = crush_df.apply(lambda x: f"{x['Batch']} ({x['Personnel']}P)", axis=1)
         fig_cr = px.timeline(crush_df, x_start="Start", x_end="Finish", y="Lane", color="Type", text="Qty")
         fig_cr.update_yaxes(autorange="reversed")
         st.plotly_chart(fig_cr, use_container_width=True)
 
-        st.subheader("Pulverizing & Sieving Gantt")
+        st.subheader("Pulverizer Allocation")
         fig_p = px.timeline(pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
         fig_p.update_yaxes(autorange="reversed")
         st.plotly_chart(fig_p, use_container_width=True)
