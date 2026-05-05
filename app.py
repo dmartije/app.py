@@ -864,9 +864,12 @@ if refresh_clicked or st.session_state.batches:
                     }
                 )
         dry_plot_df = pd.DataFrame(dry_plot)
-        fig_dry = px.timeline(dry_plot_df, x_start="Start", x_end="Finish", y="Slot", color="Type", text="Batch")
-        fig_dry.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig_dry, use_container_width=True)
+        if dry_plot_df.empty:
+            st.info("No active drying allocations to display.")
+        else:
+            fig_dry = px.timeline(dry_plot_df, x_start="Start", x_end="Finish", y="Slot", color="Type", text="Batch")
+            fig_dry.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig_dry, use_container_width=True)
 
         st.subheader("Crushing Personnel Allocation")
         crush_df["Lane"] = crush_df.apply(lambda x: f"{x['Batch']} ({x['Personnel']}P)", axis=1)
