@@ -65,6 +65,15 @@ st.markdown(
         color: #000000 !important;
         border-radius: 8px !important;
     }
+    [data-testid="stTextInput"] input,
+    [data-testid="stNumberInput"] input,
+    [data-testid="stDateInput"] input,
+    [data-testid="stTimeInput"] input,
+    [data-testid="stDateTimeInput"] input {
+        color: #000000 !important;
+        -webkit-text-fill-color: #000000 !important;
+        background-color: #FFFFFF !important;
+    }
     div[data-baseweb="select"] * { color: #000000 !important; }
     .stButton>button {
         background-color: #2D6A4F;
@@ -72,6 +81,16 @@ st.markdown(
         border-radius: 10px;
     }
     .stButton>button:hover { background-color: #40916C; }
+    .stFormSubmitButton>button {
+        background-color: #2D6A4F !important;
+        color: #FFFFFF !important;
+        border-radius: 10px !important;
+        border: none !important;
+    }
+    .stFormSubmitButton>button:hover {
+        background-color: #1B4332 !important;
+        color: #FFFFFF !important;
+    }
     [data-testid="stDataFrame"] {
         background-color: #0B2E26 !important;
         border: 1px solid #2D6A4F !important;
@@ -93,6 +112,9 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+logo_path = Path(r"C:\Users\damar\OneDrive\Documents\Dame Files\Dame Files\KMI header footer\viber_image_2024-02-27_14-50-04-299.jpg")
+if logo_path.exists():
+    st.image(str(logo_path), width=180)
 st.title("SAMPLE WORKFLOW OPTIMIZER")
 st.caption("Assay Department")
 PH_TZ = ZoneInfo("Asia/Manila")
