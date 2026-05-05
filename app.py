@@ -319,7 +319,8 @@ def schedule_batches(batches):
             crush_start += timedelta(minutes=TIME_UNIT)
 
         crush_personnel = max(1, personnel_total - active_crushing_personnel(crush_start))
-        crush_minutes = math.ceil((qty * r["crushing_per_sample"]) / crush_personnel)
+        crush_cycles = math.ceil(qty / crush_personnel)
+        crush_minutes = crush_cycles * r["crushing_per_sample"]
         crush_finish = crush_start + timedelta(minutes=crush_minutes)
 
         crushing_jobs.append({"start": crush_start, "finish": crush_finish, "personnel": crush_personnel})
@@ -663,14 +664,21 @@ if refresh_clicked or st.session_state.batches:
             .agg(LabStart=("Start", "min"), LabFinish=("Finish", "max"))
             .reset_index()
         )
-
+        lab_active_hours = (
+            lab_df.assign(
+                StepHours=(lab_df["Finish"] - lab_df["Start"]).dt.total_seconds() / 3600
+            )
+            .groupby(["Batch", "Type"])["StepHours"]
+            .sum()
+            .reset_index(name="Estimated Laboratory Hours")
+        )
+        
         finals = prep_summary.merge(lab_summary, on=["Batch", "Type"], how="left")
         finals["Estimated Sample Prep Hours"] = (
             ((finals["PrepFinish"] - finals["PrepStart"]).dt.total_seconds() / 3600).round(2)
         )
-        finals["Estimated Laboratory Hours"] = (
-            ((finals["LabFinish"] - finals["LabStart"]).dt.total_seconds() / 3600).fillna(0).round(2)
-        )
+        finals = finals.merge(lab_active_hours, on=["Batch", "Type"], how="left")
+        finals["Estimated Laboratory Hours"] = finals["Estimated Laboratory Hours"].fillna(0).round(2)
         finals["Total Processing Hours"] = (
             finals["Estimated Sample Prep Hours"] + finals["Estimated Laboratory Hours"]
         ).round(2)
