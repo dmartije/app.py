@@ -672,7 +672,7 @@ if refresh_clicked or st.session_state.batches:
             .sum()
             .reset_index(name="Estimated Laboratory Hours")
         )
-        
+
         finals = prep_summary.merge(lab_summary, on=["Batch", "Type"], how="left")
         finals["Estimated Sample Prep Hours"] = (
             ((finals["PrepFinish"] - finals["PrepStart"]).dt.total_seconds() / 3600).round(2)
