@@ -835,19 +835,26 @@ if refresh_clicked or st.session_state.batches:
         )
 
         st.subheader("Overall Sample Prep and Laboratory Process Chart")
-        overall_df["Label"] = overall_df["Batch"] + " - " + overall_df["Type"]
-        fig_overall = px.timeline(overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step")
-        fig_overall.update_yaxes(autorange="reversed")
-        fig_overall.update_yaxes(title_text="Batch No.")
-        st.plotly_chart(fig_overall, use_container_width=True)
+        active_overall_df = overall_df[overall_df["Finish"] > ph_now].copy()
+        if active_overall_df.empty:
+            st.info("No active sample batch to display.")
+        else:
+            active_overall_df["Label"] = active_overall_df["Batch"] + " - " + active_overall_df["Type"]
+            fig_overall = px.timeline(active_overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step")
+            fig_overall.update_yaxes(autorange="reversed")
+            fig_overall.update_yaxes(title_text="Batch No.")
+            st.plotly_chart(fig_overall, use_container_width=True)
 
         st.subheader("Plate Allocation")
         active_red_df = red_df[red_df["Reduction Finish"] > ph_now].copy()
-        fig_plate = px.timeline(
-            active_red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Type", text="Batch"
-        )
-        fig_plate.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig_plate, use_container_width=True)
+        if active_red_df.empty:
+            st.info("No active sample batch to display.")
+        else:
+            fig_plate = px.timeline(
+                active_red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Type", text="Batch"
+            )
+            fig_plate.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig_plate, use_container_width=True)
 
         st.subheader("Drying Oven Allocation")
         dry_plot = []
@@ -865,7 +872,7 @@ if refresh_clicked or st.session_state.batches:
                 )
         dry_plot_df = pd.DataFrame(dry_plot)
         if dry_plot_df.empty:
-            st.info("No active drying allocations to display.")
+            st.info("No active sample batch to display.")
         else:
             fig_dry = px.timeline(dry_plot_df, x_start="Start", x_end="Finish", y="Slot", color="Type", text="Batch")
             fig_dry.update_yaxes(autorange="reversed")
@@ -874,29 +881,47 @@ if refresh_clicked or st.session_state.batches:
         st.subheader("Crushing Personnel Allocation")
         crush_df["Lane"] = crush_df.apply(lambda x: f"{x['Batch']} ({x['Personnel']}P)", axis=1)
         active_crush_df = crush_df[crush_df["Finish"] > ph_now].copy()
-        fig_cr = px.timeline(active_crush_df, x_start="Start", x_end="Finish", y="Lane", color="Type", text="Qty")
-        fig_cr.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig_cr, use_container_width=True)
+        if active_crush_df.empty:
+            st.info("No active sample batch to display.")
+        else:
+            fig_cr = px.timeline(active_crush_df, x_start="Start", x_end="Finish", y="Lane", color="Type", text="Qty")
+            fig_cr.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig_cr, use_container_width=True)
 
         st.subheader("Pulverizer Allocation")
         active_pulv_df = pulv_df[pulv_df["Finish"] > ph_now].copy()
-        fig_p = px.timeline(active_pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
-        fig_p.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig_p, use_container_width=True)
+        if active_pulv_df.empty:
+            st.info("No active sample batch to display.")
+        else:
+            fig_p = px.timeline(active_pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+            fig_p.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig_p, use_container_width=True)
 
         st.subheader("Weighing Chart")
-        fig_w = px.timeline(weighing_df, x_start="Start", x_end="Finish", y="Balance", color="Type", text="Batch")
-        fig_w.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig_w, use_container_width=True)
+        active_weighing_df = weighing_df[weighing_df["Finish"] > ph_now].copy()
+        if active_weighing_df.empty:
+            st.info("No active sample batch to display.")
+        else:
+            fig_w = px.timeline(active_weighing_df, x_start="Start", x_end="Finish", y="Balance", color="Type", text="Batch")
+            fig_w.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig_w, use_container_width=True)
 
         st.subheader("Pelletizing Chart")
-        fig_pel = px.timeline(pellet_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
-        fig_pel.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig_pel, use_container_width=True)
+        active_pellet_df = pellet_df[pellet_df["Finish"] > ph_now].copy()
+        if active_pellet_df.empty:
+            st.info("No active sample batch to display.")
+        else:
+            fig_pel = px.timeline(active_pellet_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+            fig_pel.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig_pel, use_container_width=True)
 
         st.subheader("XRF Allocation Chart")
-        fig_xrf = px.timeline(xrf_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
-        fig_xrf.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig_xrf, use_container_width=True)
+        active_xrf_df = xrf_df[xrf_df["Finish"] > ph_now].copy()
+        if active_xrf_df.empty:
+            st.info("No active sample batch to display.")
+        else:
+            fig_xrf = px.timeline(active_xrf_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+            fig_xrf.update_yaxes(autorange="reversed")
+            st.plotly_chart(fig_xrf, use_container_width=True)
 
         st.success(f"Overall estimated completion time: {overall_df['Finish'].max()}")
