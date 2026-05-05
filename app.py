@@ -92,16 +92,8 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-col_logo, col_head = st.columns([1, 6])
-with col_logo:
-    logo_path = Path(r"C:\Users\damar\OneDrive\Documents\Dame Files\Dame Files\KMI header footer\viber_image_2024-02-27_14-50-04-299.jpg")
-    if logo_path.exists():
-        st.image(str(logo_path), width=120)
-    else:
-        st.warning("Logo not found")
-with col_head:
-    st.title("Sample Workflow Optimizer")
-    st.caption("Assay Department")
+st.title("SAMPLE WORKFLOW OPTIMIZER")
+st.caption("Assay Department")
 PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
 st.caption(f"Current Philippine Time: {ph_now.strftime('%Y-%m-%d %I:%M:%S %p')}")
