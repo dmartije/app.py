@@ -173,8 +173,11 @@ if add_clicked and new_batch_id.strip():
             "received_at": pd.Timestamp(new_received),
         }
     )
-    save_batches(st.session_state.batches)
-    st.rerun()
+    try:
+        save_batches(st.session_state.batches)
+        st.success(f"Batch {new_batch_id.strip()} added.")
+    except Exception as e:
+        st.error(f"Batch added in session but failed to save to disk: {e}")
 
 st.subheader("Batch List Table")
 if st.session_state.batches:
