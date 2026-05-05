@@ -1,7 +1,6 @@
 import math
 import time
 from datetime import datetime, timedelta
-from itertools import permutations
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import json
@@ -116,6 +115,7 @@ logo_path = Path(r"C:\Users\damar\OneDrive\Documents\Dame Files\Dame Files\KMI h
 if logo_path.exists():
     st.image(str(logo_path), width=180)
 st.title("SAMPLE WORKFLOW OPTIMIZER")
+st.caption("Assay Department")
 PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
 st.caption(f"Current Philippine Time: {ph_now.strftime('%Y-%m-%d %I:%M:%S %p')}")
@@ -385,7 +385,8 @@ def schedule_batches(batches):
 
         reduction_per_sample = per_sample_minutes("reduction", b["sample_type"], material)
         used_plates = free_plates[:plates_need]
-        effective_parallel_samples = max(1, len(used_plates) * r["plate_capacity"])
+        # Reduction cycle time is per-sample process time; each plate handles one sample-process in parallel.
+        effective_parallel_samples = max(1, len(used_plates))
         reduction_cycles = math.ceil(qty / effective_parallel_samples)
         reduction_minutes = reduction_cycles * reduction_per_sample
         red_finish = red_start + timedelta(minutes=reduction_minutes)
@@ -718,29 +719,11 @@ def optimize_batch_order(batches, time_limit_seconds):
     if not batches:
         return batches, "FEASIBLE", "No batches."
 
-    base = sorted(batches, key=lambda b: (b["received_at"], rules[b["sample_type"]]["priority"]))
-    n = len(base)
-    if n > 8:
-        return base, "FEASIBLE", "Heuristic order used (too many batches for exhaustive search)."
-
-    start_t = time.time()
-    best_order = base
-    best_finish = None
-    tested = 0
-    total = math.factorial(n)
-
-    for perm in permutations(base):
-        tested += 1
-        _, _, _, _, overall_df, _, _, _ = schedule_batches(list(perm))
-        finish = overall_df["Finish"].max() if not overall_df.empty else pd.Timestamp.min
-        if best_finish is None or finish < best_finish:
-            best_finish = finish
-            best_order = list(perm)
-
-        if time.time() - start_t >= time_limit_seconds:
-            return best_order, "FEASIBLE", f"Searched {tested}/{total} orders within {time_limit_seconds}s."
-
-    return best_order, "OPTIMAL", f"Exhaustive search complete ({tested}/{total} orders)."
+    # Enforce deterministic priority + FIFO behavior:
+    # - Sublot prioritized
+    # - Within same priority class, earlier received batches complete first
+    ordered = sorted(batches, key=lambda b: (rules[b["sample_type"]]["priority"], b["received_at"]))
+    return ordered, "FEASIBLE", "Priority + FIFO ordering applied."
 
 
 def batch_status_at_time(overall_df, ts):
