@@ -115,6 +115,7 @@ logo_path = Path(r"C:\Users\damar\OneDrive\Documents\Dame Files\Dame Files\KMI h
 if logo_path.exists():
     st.image(str(logo_path), width=180)
 st.title("SAMPLE WORKFLOW OPTIMIZER")
+st.caption("Assay Department")
 PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
 st.caption(f"Current Philippine Time: {ph_now.strftime('%Y-%m-%d %I:%M:%S %p')}")
@@ -718,11 +719,13 @@ def optimize_batch_order(batches, time_limit_seconds):
     if not batches:
         return batches, "FEASIBLE", "No batches."
 
-    # Enforce deterministic priority + FIFO behavior:
-    # - Sublot prioritized
-    # - Within same priority class, earlier received batches complete first
-    ordered = sorted(batches, key=lambda b: (rules[b["sample_type"]]["priority"], b["received_at"]))
-    return ordered, "FEASIBLE", "Priority + FIFO ordering applied."
+    # FIFO baseline by received time; apply Sublot priority only when jobs are equally ready.
+    # This keeps Mine/Face naturally FIFO while still favoring Sublot on direct contention.
+    ordered = sorted(
+        batches,
+        key=lambda b: (b["received_at"], 0 if b["sample_type"] == "Sublot" else 1),
+    )
+    return ordered, "FEASIBLE", "FIFO ordering applied (Sublot prioritized on same-ready contention)."
 
 
 def batch_status_at_time(overall_df, ts):
