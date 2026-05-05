@@ -38,6 +38,7 @@ def save_batches(records):
         serializable.append(row)
     BATCH_STORE.write_text(json.dumps(serializable, indent=2))
 
+
 # Global scheduling constraints.
 TIME_UNIT = 5
 TOTAL_PLATES = 5
@@ -95,15 +96,57 @@ rules = {
     },
 }
 
+
+def per_sample_minutes(step, sample_type, material):
+    material = (material or "").strip().lower()
+    matrix = {
+        "reduction": {
+            "Face": 5,
+            "Mine": {"limonite": 30, "saprolite": 45},
+            "Sublot": {"limonite": 45, "saprolite": 60},
+            "Lot Quality": 30,
+        },
+        "crushing": {
+            "Face": 7,
+            "Mine": {"limonite": 10, "saprolite": 15},
+            "Sublot": {"limonite": 15, "saprolite": 15},
+            "Lot Quality": 10,
+        },
+        "pulverizing": {
+            "Face": 7,
+            "Mine": {"limonite": 15, "saprolite": 15},
+            "Sublot": {"limonite": 30, "saprolite": 30},
+            "Lot Quality": 15,
+        },
+        "weighing": {"Face": 3, "Mine": 3, "Sublot": 3, "Lot Quality": 3},
+    }
+    cfg = matrix[step][sample_type]
+    if isinstance(cfg, dict):
+        return cfg.get(material, next(iter(cfg.values())))
+    return cfg
+
+
 st.sidebar.header("Shared Capacity Inputs")
-personnel_total = st.sidebar.number_input("Personnel Present", min_value=1, max_value=100, value=20)
-window_start = st.sidebar.time_input("Higher-capacity window start", value=datetime(2026, 5, 4, 14, 0).time())
-window_end = st.sidebar.time_input("Higher-capacity window end", value=datetime(2026, 5, 5, 6, 0).time())
-ovens_high = st.sidebar.selectbox("Ovens operating during higher-capacity window", [1, 2], index=1)
-ovens_low = st.sidebar.selectbox("Ovens operating outside that window", [1, 2], index=0)
+personnel_total = st.sidebar.number_input(
+    "Personnel Present", min_value=1, max_value=100, value=20
+)
+window_start = st.sidebar.time_input(
+    "Higher-capacity window start", value=datetime(2026, 5, 4, 14, 0).time()
+)
+window_end = st.sidebar.time_input(
+    "Higher-capacity window end", value=datetime(2026, 5, 5, 6, 0).time()
+)
+ovens_high = st.sidebar.selectbox(
+    "Ovens operating during higher-capacity window", [1, 2], index=1
+)
+ovens_low = st.sidebar.selectbox(
+    "Ovens operating outside that window", [1, 2], index=0
+)
 pulverizer_count = st.sidebar.selectbox("Pulverizers operating", [1, 2], index=1)
 xrf_machine_count = st.sidebar.selectbox("XRF machines operating", [1, 2], index=1)
-solver_time_limit = st.sidebar.slider("Solver Time Limit (seconds)", min_value=3, max_value=60, value=15)
+solver_time_limit = st.sidebar.slider(
+    "Solver Time Limit (seconds)", min_value=3, max_value=60, value=15
+)
 
 # Persist batches across Streamlit reruns.
 if "batches" not in st.session_state:
@@ -115,7 +158,9 @@ with st.sidebar.form("add_batch_form", clear_on_submit=True):
     new_type = st.selectbox("Sample Type", list(rules.keys()))
     new_material = st.selectbox("Material", ["Limonite", "Saprolite"], index=0)
     new_qty = st.number_input("Number of Samples", min_value=1, max_value=10000, value=1)
-    new_received = st.datetime_input("Date and Time Received", value=datetime(2026, 5, 4, 8, 0))
+    new_received = st.datetime_input(
+        "Date and Time Received", value=datetime(2026, 5, 4, 8, 0)
+    )
     add_clicked = st.form_submit_button("Add Batch")
 
 if add_clicked and new_batch_id.strip():
@@ -187,7 +232,9 @@ def schedule_batches(batches):
     plate_free = {f"Plate {i}": pd.Timestamp.min for i in range(1, TOTAL_PLATES + 1)}
     oven_jobs = []
     crushing_jobs = []
-    pulv_free = {f"Pulverizer {i}": pd.Timestamp.min for i in range(1, int(pulverizer_count) + 1)}
+    pulv_free = {
+        f"Pulverizer {i}": pd.Timestamp.min for i in range(1, int(pulverizer_count) + 1)
+    }
 
     def active_crushing_personnel(ts):
         return sum(j["personnel"] for j in crushing_jobs if j["start"] <= ts < j["finish"])
@@ -214,7 +261,10 @@ def schedule_batches(batches):
                 candidates = [f"Oven {i}" for i in range(1, ovens + 1)]
                 active_slots = []
                 for dj in oven_jobs:
-                    if not (pre_start + pre_duration <= dj["start"] or pre_start >= dj["finish"]):
+                    if not (
+                        pre_start + pre_duration <= dj["start"]
+                        or pre_start >= dj["finish"]
+                    ):
                         active_slots.extend(dj["slots"])
                 free_slots = []
                 for o in candidates:
@@ -228,7 +278,15 @@ def schedule_batches(batches):
             pre_finish = pre_start + pre_duration
             oven_jobs.append({"start": pre_start, "finish": pre_finish, "slots": pre_slots})
             drying_rows.append(
-                {"Batch": bid, "Type": b["sample_type"], "Qty": qty, "Step": "Pre-Drying", "Start": pre_start, "Finish": pre_finish, "Slots": pre_slots}
+                {
+                    "Batch": bid,
+                    "Type": b["sample_type"],
+                    "Qty": qty,
+                    "Step": "Pre-Drying",
+                    "Start": pre_start,
+                    "Finish": pre_finish,
+                    "Slots": pre_slots,
+                }
             )
             red_start = pre_finish
 
@@ -238,18 +296,14 @@ def schedule_batches(batches):
             plates_need = min(plates_need, TOTAL_PLATES)
             free_plates = [p for p, t in plate_free.items() if t <= red_start]
             personnel_need = min(
-                personnel_total, max(1, math.ceil(qty / r["plate_capacity"]) * r["reduction_personnel"])
+                personnel_total,
+                max(1, math.ceil(qty / r["plate_capacity"]) * r["reduction_personnel"]),
             )
             if len(free_plates) >= plates_need:
                 break
             red_start += timedelta(minutes=TIME_UNIT)
 
-        if b["sample_type"] in ["Mine", "Sublot"]:
-            reduction_per_sample = 10 if (b["sample_type"] == "Mine" and material == "Limonite") else \
-                15 if (b["sample_type"] == "Mine" and material == "Saprolite") else \
-                30 if (b["sample_type"] == "Sublot" and material == "Limonite") else 45
-        else:
-            reduction_per_sample = r["reduction_minutes"]
+        reduction_per_sample = per_sample_minutes("reduction", b["sample_type"], material)
         used_plates = free_plates[:plates_need]
         effective_parallel_samples = max(1, len(used_plates) * r["plate_capacity"])
         reduction_cycles = math.ceil(qty / effective_parallel_samples)
@@ -320,10 +374,13 @@ def schedule_batches(batches):
 
         crush_personnel = max(1, personnel_total - active_crushing_personnel(crush_start))
         crush_cycles = math.ceil(qty / crush_personnel)
-        crush_minutes = crush_cycles * r["crushing_per_sample"]
+        crush_per_sample = per_sample_minutes("crushing", b["sample_type"], material)
+        crush_minutes = crush_cycles * crush_per_sample
         crush_finish = crush_start + timedelta(minutes=crush_minutes)
 
-        crushing_jobs.append({"start": crush_start, "finish": crush_finish, "personnel": crush_personnel})
+        crushing_jobs.append(
+            {"start": crush_start, "finish": crush_finish, "personnel": crush_personnel}
+        )
         crushing_rows.append(
             {
                 "Batch": bid,
@@ -345,7 +402,8 @@ def schedule_batches(batches):
             if q_m <= 0:
                 continue
             p_start = max(crush_finish, pulv_free[m])
-            p_minutes = math.ceil(q_m * r["pulv_per_sample"])
+            pulv_per_sample = per_sample_minutes("pulverizing", b["sample_type"], material)
+            p_minutes = math.ceil(q_m * pulv_per_sample)
             p_finish = p_start + timedelta(minutes=p_minutes)
             pulv_free[m] = p_finish
             pulv_rows.append(
@@ -395,7 +453,13 @@ def schedule_batches(batches):
             pre = d[d["Step"] == "Pre-Drying"]
             if not pre.empty:
                 overall_rows.append(
-                    {"Batch": bid, "Type": rt["Type"], "Step": "Pre-Drying", "Start": pre["Start"].min(), "Finish": pre["Finish"].max()}
+                    {
+                        "Batch": bid,
+                        "Type": rt["Type"],
+                        "Step": "Pre-Drying",
+                        "Start": pre["Start"].min(),
+                        "Finish": pre["Finish"].max(),
+                    }
                 )
             d_final = d[d["Step"] == "Drying"]
             if not d_final.empty:
@@ -432,7 +496,9 @@ def schedule_batches(batches):
 
             lab_sort_start = pulv_finish
             lab_sort_finish = lab_sort_start + timedelta(minutes=10)
-            lab_dry_finish = lab_sort_finish + timedelta(minutes=rules[rt["Type"]]["lab_drying_minutes"])
+            lab_dry_finish = lab_sort_finish + timedelta(
+                minutes=rules[rt["Type"]]["lab_drying_minutes"]
+            )
             cool_finish = lab_dry_finish + timedelta(minutes=45)
 
             overall_rows.extend(
@@ -496,7 +562,10 @@ def schedule_batches(batches):
             ready = [t for t in pending if t["ready"] <= current_t]
         chosen = sorted(ready, key=task_priority)[0]
         start_t = current_t
-        finish_t = start_t + timedelta(minutes=2)
+        weigh_minutes = per_sample_minutes(
+            "weighing", chosen["Type"], batch_lookup[chosen["Batch"]].get("material", "N/A")
+        )
+        finish_t = start_t + timedelta(minutes=weigh_minutes)
         balances[machine] = finish_t
         pending.remove(chosen)
         weighing_rows.append(
@@ -562,11 +631,29 @@ def schedule_batches(batches):
         x = xrf_df[xrf_df["Batch"] == bid]
         batch_type = overall_df[overall_df["Batch"] == bid]["Type"].iloc[0]
         if not w.empty:
-            overall_df.loc[len(overall_df)] = [bid, batch_type, "Weighing", w["Start"].min(), w["Finish"].max()]
+            overall_df.loc[len(overall_df)] = [
+                bid,
+                batch_type,
+                "Weighing",
+                w["Start"].min(),
+                w["Finish"].max(),
+            ]
         if not pel.empty:
-            overall_df.loc[len(overall_df)] = [bid, batch_type, "Pelletizing", pel["Start"].min(), pel["Finish"].max()]
+            overall_df.loc[len(overall_df)] = [
+                bid,
+                batch_type,
+                "Pelletizing",
+                pel["Start"].min(),
+                pel["Finish"].max(),
+            ]
         if not x.empty:
-            overall_df.loc[len(overall_df)] = [bid, batch_type, "XRF Analysis", x["Start"].min(), x["Finish"].max()]
+            overall_df.loc[len(overall_df)] = [
+                bid,
+                batch_type,
+                "XRF Analysis",
+                x["Start"].min(),
+                x["Finish"].max(),
+            ]
 
     return red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df
 
@@ -631,8 +718,12 @@ def batch_status_at_time(overall_df, ts):
 
 refresh_clicked = st.button("Refresh Schedule")
 if refresh_clicked or st.session_state.batches:
-    best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches, solver_time_limit)
-    red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df = schedule_batches(best_order)
+    best_order, solver_status, solver_message = optimize_batch_order(
+        st.session_state.batches, solver_time_limit
+    )
+    red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df = schedule_batches(
+        best_order
+    )
 
     if overall_df.empty:
         st.warning("No batches to schedule.")
@@ -641,7 +732,14 @@ if refresh_clicked or st.session_state.batches:
         st.caption(solver_message)
 
         st.subheader("Batch Completion Summary")
-        sample_prep_steps = ["Sorting", "Pre-Drying", "Reduction", "Drying", "Crushing", "Pulverizing & Sieving"]
+        sample_prep_steps = [
+            "Sorting",
+            "Pre-Drying",
+            "Reduction",
+            "Drying",
+            "Crushing",
+            "Pulverizing & Sieving",
+        ]
         lab_steps = [
             "Laboratory Sorting",
             "Laboratory Drying",
@@ -665,9 +763,7 @@ if refresh_clicked or st.session_state.batches:
             .reset_index()
         )
         lab_active_hours = (
-            lab_df.assign(
-                StepHours=(lab_df["Finish"] - lab_df["Start"]).dt.total_seconds() / 3600
-            )
+            lab_df.assign(StepHours=(lab_df["Finish"] - lab_df["Start"]).dt.total_seconds() / 3600)
             .groupby(["Batch", "Type"])["StepHours"]
             .sum()
             .reset_index(name="Estimated Laboratory Hours")
@@ -700,9 +796,9 @@ if refresh_clicked or st.session_state.batches:
             },
             {
                 "Process Step": "Reduction",
-                "Face": rules["Face"]["reduction_minutes"],
-                "Mine": rules["Mine"]["reduction_minutes"],
-                "Sublot": rules["Sublot"]["reduction_minutes"],
+                "Face": per_sample_minutes("reduction", "Face", "N/A"),
+                "Mine": "Limonite 30 / Saprolite 45",
+                "Sublot": "Limonite 45 / Saprolite 60",
                 "Lot Quality": rules["Lot Quality"]["reduction_minutes"],
                 "Processing Basis": "Per Batch",
                 "Resource Used": "Personnel / Plate",
@@ -720,9 +816,9 @@ if refresh_clicked or st.session_state.batches:
             },
             {
                 "Process Step": "Crushing",
-                "Face": rules["Face"]["crushing_per_sample"],
-                "Mine": rules["Mine"]["crushing_per_sample"],
-                "Sublot": rules["Sublot"]["crushing_per_sample"],
+                "Face": per_sample_minutes("crushing", "Face", "N/A"),
+                "Mine": "Limonite 10 / Saprolite 15",
+                "Sublot": "Limonite 15 / Saprolite 15",
                 "Lot Quality": rules["Lot Quality"]["crushing_per_sample"],
                 "Processing Basis": "Per Sample",
                 "Resource Used": "Personnel",
@@ -730,9 +826,9 @@ if refresh_clicked or st.session_state.batches:
             },
             {
                 "Process Step": "Pulverizing & Sieving",
-                "Face": rules["Face"]["pulv_per_sample"],
-                "Mine": rules["Mine"]["pulv_per_sample"],
-                "Sublot": rules["Sublot"]["pulv_per_sample"],
+                "Face": per_sample_minutes("pulverizing", "Face", "N/A"),
+                "Mine": "Limonite 15 / Saprolite 15",
+                "Sublot": "Limonite 30 / Saprolite 30",
                 "Lot Quality": rules["Lot Quality"]["pulv_per_sample"],
                 "Processing Basis": "Per Sample",
                 "Resource Used": "Pulverizer",
@@ -770,10 +866,10 @@ if refresh_clicked or st.session_state.batches:
             },
             {
                 "Process Step": "Weighing",
-                "Face": 2,
-                "Mine": 2,
-                "Sublot": 2,
-                "Lot Quality": 2,
+                "Face": 3,
+                "Mine": 3,
+                "Sublot": 3,
+                "Lot Quality": 3,
                 "Processing Basis": "Per Sample",
                 "Resource Used": "Balance",
                 "Notes": "Two balances in parallel; Sublot prioritized when ready.",
@@ -817,7 +913,9 @@ if refresh_clicked or st.session_state.batches:
             "XRF Analysis",
         ]
         step_batch_summary = overall_df.copy()
-        step_batch_summary["Step"] = pd.Categorical(step_batch_summary["Step"], categories=step_order, ordered=True)
+        step_batch_summary["Step"] = pd.Categorical(
+            step_batch_summary["Step"], categories=step_order, ordered=True
+        )
         step_batch_summary = step_batch_summary.sort_values(["Batch", "Step"])
         step_batch_summary["Duration Minutes"] = (
             (step_batch_summary["Finish"] - step_batch_summary["Start"]).dt.total_seconds() / 60
@@ -828,7 +926,9 @@ if refresh_clicked or st.session_state.batches:
             + (step_batch_summary["Duration Minutes"] / 60).round(2).astype(str)
             + " hr)"
         )
-        step_batch_summary["Batch Label"] = step_batch_summary["Batch"] + " - " + step_batch_summary["Type"]
+        step_batch_summary["Batch Label"] = (
+            step_batch_summary["Batch"] + " - " + step_batch_summary["Type"]
+        )
         st.dataframe(
             step_batch_summary[["Batch Label", "Step", "Start", "Finish", "Duration (Min/Hr)"]],
             use_container_width=True,
@@ -840,7 +940,14 @@ if refresh_clicked or st.session_state.batches:
             st.info("No active sample batch to display.")
         else:
             active_overall_df["Label"] = active_overall_df["Batch"] + " - " + active_overall_df["Type"]
-            fig_overall = px.timeline(active_overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step")
+            fig_overall = px.timeline(
+                active_overall_df,
+                x_start="Start",
+                x_end="Finish",
+                y="Label",
+                color="Step",
+                text="Step",
+            )
             fig_overall.update_yaxes(autorange="reversed")
             fig_overall.update_yaxes(title_text="Batch No.")
             st.plotly_chart(fig_overall, use_container_width=True)
@@ -851,7 +958,12 @@ if refresh_clicked or st.session_state.batches:
             st.info("No active sample batch to display.")
         else:
             fig_plate = px.timeline(
-                active_red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Type", text="Batch"
+                active_red_df,
+                x_start="Reduction Start",
+                x_end="Reduction Finish",
+                y="Plate",
+                color="Type",
+                text="Batch",
             )
             fig_plate.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_plate, use_container_width=True)
@@ -874,7 +986,9 @@ if refresh_clicked or st.session_state.batches:
         if dry_plot_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_dry = px.timeline(dry_plot_df, x_start="Start", x_end="Finish", y="Slot", color="Type", text="Batch")
+            fig_dry = px.timeline(
+                dry_plot_df, x_start="Start", x_end="Finish", y="Slot", color="Type", text="Batch"
+            )
             fig_dry.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_dry, use_container_width=True)
 
@@ -884,7 +998,9 @@ if refresh_clicked or st.session_state.batches:
         if active_crush_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_cr = px.timeline(active_crush_df, x_start="Start", x_end="Finish", y="Lane", color="Type", text="Qty")
+            fig_cr = px.timeline(
+                active_crush_df, x_start="Start", x_end="Finish", y="Lane", color="Type", text="Qty"
+            )
             fig_cr.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_cr, use_container_width=True)
 
@@ -893,7 +1009,9 @@ if refresh_clicked or st.session_state.batches:
         if active_pulv_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_p = px.timeline(active_pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+            fig_p = px.timeline(
+                active_pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch"
+            )
             fig_p.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_p, use_container_width=True)
 
@@ -902,7 +1020,9 @@ if refresh_clicked or st.session_state.batches:
         if active_weighing_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_w = px.timeline(active_weighing_df, x_start="Start", x_end="Finish", y="Balance", color="Type", text="Batch")
+            fig_w = px.timeline(
+                active_weighing_df, x_start="Start", x_end="Finish", y="Balance", color="Type", text="Batch"
+            )
             fig_w.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_w, use_container_width=True)
 
@@ -911,7 +1031,9 @@ if refresh_clicked or st.session_state.batches:
         if active_pellet_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_pel = px.timeline(active_pellet_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+            fig_pel = px.timeline(
+                active_pellet_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch"
+            )
             fig_pel.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_pel, use_container_width=True)
 
@@ -920,7 +1042,9 @@ if refresh_clicked or st.session_state.batches:
         if active_xrf_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_xrf = px.timeline(active_xrf_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+            fig_xrf = px.timeline(
+                active_xrf_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch"
+            )
             fig_xrf.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_xrf, use_container_width=True)
 
