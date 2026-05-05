@@ -719,12 +719,20 @@ def optimize_batch_order(batches, time_limit_seconds):
     if not batches:
         return batches, "FEASIBLE", "No batches."
 
-    # FIFO baseline by received time; apply Sublot priority only when jobs are equally ready.
-    # This keeps Mine/Face naturally FIFO while still favoring Sublot on direct contention.
-    ordered = sorted(
-        batches,
-        key=lambda b: (b["received_at"], 0 if b["sample_type"] == "Sublot" else 1),
+    # FIFO baseline by received time.
+    # Tie-break behavior:
+    # - Sublot gets priority when same-ready contention occurs
+    # - Face and Mine preserve first-input order for same timestamp (single-batch progression)
+    indexed = list(enumerate(batches))
+    ordered_pairs = sorted(
+        indexed,
+        key=lambda pair: (
+            pair[1]["received_at"],
+            0 if pair[1]["sample_type"] == "Sublot" else 1,
+            pair[0],  # preserve first-input order on ties (especially Face/Mine)
+        ),
     )
+    ordered = [b for _, b in ordered_pairs]
     return ordered, "FEASIBLE", "FIFO ordering applied (Sublot prioritized on same-ready contention)."
 
 
