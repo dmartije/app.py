@@ -18,6 +18,13 @@ st.markdown(
         background: linear-gradient(180deg, #3f4f3c 0%, #2f3f2c 100%);
         color: #f2f5ea;
     }
+    section[data-testid="stSidebar"] {
+        background: #233224 !important;
+        border-right: 1px solid #6f8a65;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #f2f5ea !important;
+    }
     .block-container {
         background: rgba(20, 30, 20, 0.72);
         border: 1px solid #6f8a65;
@@ -51,6 +58,19 @@ st.markdown(
         margin-top: 0.35rem;
         color: #d9e5cd;
     }
+    div[data-testid="stDataFrame"] {
+        background: rgba(26, 38, 27, 0.92) !important;
+        border: 1px solid #6f8a65 !important;
+        border-radius: 10px;
+    }
+    div[data-testid="stDataFrame"] * {
+        color: #f2f5ea !important;
+    }
+    .stAlert {
+        background: rgba(37, 57, 37, 0.9) !important;
+        border: 1px solid #6f8a65 !important;
+        color: #f2f5ea !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -65,12 +85,26 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-logo_path = Path(r"C:\Users\damar\OneDrive\Documents\Dame Files\Dame Files\KMI header footer")
-logo_candidates = [logo_path, logo_path / "logo.png", logo_path / "kmi_logo.png"]
-for candidate in logo_candidates:
-    if candidate.exists() and candidate.is_file():
-        st.image(str(candidate), width=320)
-        break
+
+# Exact logo file provided by user
+exact_logo = Path(
+    r"C:\Users\damar\OneDrive\Documents\Dame Files\Dame Files\KMI header footer\viber_image_2024-02-27_14-50-04-299.jpg"
+)
+if exact_logo.exists() and exact_logo.is_file():
+    st.image(str(exact_logo), width=320)
+else:
+    # Fallback scanning in the same folder
+    logo_path = Path(r"C:\Users\damar\OneDrive\Documents\Dame Files\Dame Files\KMI header footer")
+    logo_candidates = [logo_path, logo_path / "logo.png", logo_path / "kmi_logo.png"]
+    if logo_path.exists() and logo_path.is_dir():
+        logo_candidates.extend(list(logo_path.glob("*.png")))
+        logo_candidates.extend(list(logo_path.glob("*.jpg")))
+        logo_candidates.extend(list(logo_path.glob("*.jpeg")))
+    for candidate in logo_candidates:
+        if candidate.exists() and candidate.is_file():
+            st.image(str(candidate), width=320)
+            break
+
 st.title("Sample Workflow Optimizer")
 PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
