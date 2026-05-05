@@ -10,7 +10,67 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title="Sample Scheduler", layout="wide")
+st.set_page_config(page_title="Sample Workflow Optimizer", layout="wide")
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background: linear-gradient(180deg, #3f4f3c 0%, #2f3f2c 100%);
+        color: #f2f5ea;
+    }
+    .block-container {
+        background: rgba(20, 30, 20, 0.72);
+        border: 1px solid #6f8a65;
+        border-radius: 14px;
+        padding: 1.2rem 1.2rem 1.2rem 1.2rem;
+    }
+    h1, h2, h3, h4, h5, h6, p, label, .stMarkdown, .stCaption {
+        color: #f2f5ea !important;
+    }
+    .kmi-header {
+        background: #1f2c1f;
+        border: 1px solid #6f8a65;
+        border-radius: 12px;
+        padding: 0.9rem 1.2rem;
+        margin-bottom: 1rem;
+    }
+    .kmi-title {
+        font-size: 1.75rem;
+        font-weight: 700;
+        margin: 0;
+        color: #d9e5cd;
+        letter-spacing: 0.5px;
+    }
+    .kmi-subtitle {
+        font-size: 1.05rem;
+        margin: 0.2rem 0 0 0;
+        color: #d9e5cd;
+    }
+    .kmi-author {
+        font-size: 0.95rem;
+        margin-top: 0.35rem;
+        color: #d9e5cd;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+st.markdown(
+    """
+    <div class="kmi-header">
+        <p class="kmi-title">KAFUGAN MINING INCORPORATED</p>
+        <p class="kmi-subtitle">Assay Department</p>
+        <p class="kmi-author">Created by: Engr. Dame Augustine Martije</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+logo_path = Path(r"C:\Users\damar\OneDrive\Documents\Dame Files\Dame Files\KMI header footer")
+logo_candidates = [logo_path, logo_path / "logo.png", logo_path / "kmi_logo.png"]
+for candidate in logo_candidates:
+    if candidate.exists() and candidate.is_file():
+        st.image(str(candidate), width=320)
+        break
 st.title("Sample Workflow Optimizer")
 PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
