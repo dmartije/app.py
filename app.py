@@ -250,8 +250,11 @@ def schedule_batches(batches):
                 30 if (b["sample_type"] == "Sublot" and material == "Limonite") else 45
         else:
             reduction_per_sample = r["reduction_minutes"]
-        red_finish = red_start + timedelta(minutes=qty * reduction_per_sample)
         used_plates = free_plates[:plates_need]
+        effective_parallel_samples = max(1, len(used_plates) * r["plate_capacity"])
+        reduction_cycles = math.ceil(qty / effective_parallel_samples)
+        reduction_minutes = reduction_cycles * reduction_per_sample
+        red_finish = red_start + timedelta(minutes=reduction_minutes)
         for p in used_plates:
             plate_free[p] = red_finish
 
