@@ -40,6 +40,7 @@ st.markdown(
         border: 1px solid #6f8a65;
         border-radius: 12px;
         padding: 0.9rem 1.2rem;
+        margin-top: 2.2rem;
         margin-bottom: 1rem;
     }
     .kmi-title {
