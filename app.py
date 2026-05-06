@@ -969,8 +969,19 @@ if refresh_clicked or st.session_state.batches:
         if active_overall_df.empty:
             st.info("No active sample batch to display.")
         else:
+            active_overall_df["Step"] = pd.Categorical(
+                active_overall_df["Step"], categories=step_order, ordered=True
+            )
             active_overall_df["Label"] = active_overall_df["Batch"] + " - " + active_overall_df["Type"]
-            fig_overall = px.timeline(active_overall_df, x_start="Start", x_end="Finish", y="Label", color="Step", text="Step")
+            fig_overall = px.timeline(
+                active_overall_df,
+                x_start="Start",
+                x_end="Finish",
+                y="Label",
+                color="Step",
+                text="Step",
+                category_orders={"Step": step_order},
+            )
             fig_overall.update_yaxes(autorange="reversed")
             fig_overall.update_yaxes(title_text="Batch No.")
             st.plotly_chart(fig_overall, use_container_width=True)
