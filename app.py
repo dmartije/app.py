@@ -167,7 +167,6 @@ logo_path = Path(r"C:\Users\damar\OneDrive\Documents\Dame Files\Dame Files\KMI h
 if logo_path.exists():
     st.image(str(logo_path), width=180)
 st.title("SAMPLE WORKFLOW OPTIMIZER")
-st.caption("Assay Department")
 PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
 st.caption(f"Current Philippine Time: {ph_now.strftime('%Y-%m-%d %I:%M:%S %p')}")
@@ -296,10 +295,15 @@ def style_lab_table(df):
     )
 
 
+def lab_section_title(title):
+    """Render section headings with the reusable laboratory title style."""
+    st.markdown(f'<div class="lab-table-card-title">{html.escape(title)}</div>', unsafe_allow_html=True)
+
+
 def lab_table_card(title, dataframe, caption=None, height="content"):
     """Render every dataframe in a consistent army-green laboratory card."""
     with st.container(border=True):
-        st.markdown(f'<div class="lab-table-card-title">{html.escape(title)}</div>', unsafe_allow_html=True)
+        lab_section_title(title)
         if caption:
             st.markdown(f'<div class="lab-table-caption">{html.escape(caption)}</div>', unsafe_allow_html=True)
         st.dataframe(style_lab_table(dataframe), use_container_width=True, height=height)
@@ -308,7 +312,7 @@ def lab_table_card(title, dataframe, caption=None, height="content"):
 def lab_editor_card(title, dataframe, **editor_kwargs):
     """Render editable tables with the same laboratory card treatment."""
     with st.container(border=True):
-        st.markdown(f'<div class="lab-table-card-title">{html.escape(title)}</div>', unsafe_allow_html=True)
+        lab_section_title(title)
         return st.data_editor(dataframe, use_container_width=True, **editor_kwargs)
 
 # Global scheduling constraints.
@@ -410,9 +414,11 @@ pulverizer_count = st.sidebar.selectbox("Pulverizers operating", [1, 2], index=1
 xrf_machine_count = st.sidebar.selectbox("XRF machines operating", [1, 2], index=1)
 solver_time_limit = st.sidebar.slider("Solver Time Limit (seconds)", min_value=3, max_value=60, value=15)
 
-# Persist batches across Streamlit reruns.
+# Persist batches and selected schedule mode across Streamlit reruns.
 if "batches" not in st.session_state:
     st.session_state.batches = load_batches()
+if "schedule_mode" not in st.session_state:
+    st.session_state.schedule_mode = "fifo"
 
 st.sidebar.markdown("### Append Batch")
 with st.sidebar.form("add_batch_form", clear_on_submit=True):
@@ -454,7 +460,15 @@ if st.session_state.batches:
             )
         },
     )
-    if st.button("Apply Batch Edits / Deletes"):
+    apply_col, fifo_col, soft_col = st.columns(3)
+    with apply_col:
+        apply_clicked = st.button("Apply Batch Edits/Deletes", use_container_width=True)
+    with fifo_col:
+        fifo_clicked = st.button("FIFO Sublot Priority Button", use_container_width=True)
+    with soft_col:
+        soft_clicked = st.button("Soft Priority Solver Button", use_container_width=True)
+
+    if apply_clicked:
         remove_mask = edited["Remove"].fillna(False).astype(bool)
         kept = edited[~remove_mask].drop(columns=["Remove"]).copy()
         kept["qty"] = kept["qty"].astype(int)
@@ -462,6 +476,12 @@ if st.session_state.batches:
         st.session_state.batches = kept.to_dict("records")
         save_batches(st.session_state.batches)
         st.rerun()
+    if fifo_clicked:
+        st.session_state.schedule_mode = "fifo"
+        st.success("Showing FIFO Sublot Priority")
+    if soft_clicked:
+        st.session_state.schedule_mode = "soft"
+        st.success("Showing Soft Priority")
 else:
     st.info("No batches yet. Add a batch from the sidebar.")
 
@@ -1031,22 +1051,6 @@ def show_legend_on_right(fig, title_text):
     )
     return fig
 
-
-if "schedule_mode" not in st.session_state:
-    st.session_state.schedule_mode = "fifo"
-
-fifo_col, soft_col = st.columns(2)
-with fifo_col:
-    fifo_clicked = st.button("FIFO Sublot Priority Button")
-with soft_col:
-    soft_clicked = st.button("Soft Priority Solver Button")
-
-if fifo_clicked:
-    st.session_state.schedule_mode = "fifo"
-    st.success("Showing FIFO Sublot Priority")
-if soft_clicked:
-    st.session_state.schedule_mode = "soft"
-    st.success("Showing Soft Priority")
 if st.session_state.batches:
     if st.session_state.schedule_mode == "soft":
         best_order, solver_status, solver_message = optimize_soft_priority_order(st.session_state.batches, solver_time_limit)
@@ -1257,7 +1261,7 @@ if st.session_state.batches:
             step_batch_summary[["Batch Label", "Step", "Start", "Finish", "Duration (Min/Hr)"]],
         )
 
-        st.subheader("Overall Sample Prep and Laboratory Process Chart")
+        lab_section_title("Overall Sample Prep and Laboratory Process Chart")
         active_overall_df = overall_df[overall_df["Finish"] > ph_now].copy()
         if active_overall_df.empty:
             st.info("No active sample batch to display.")
@@ -1279,7 +1283,7 @@ if st.session_state.batches:
             fig_overall.update_yaxes(title_text="Batch No.")
             st.plotly_chart(fig_overall, use_container_width=True)
 
-        st.subheader("Plate Allocation")
+        lab_section_title("Plate Assignment Chart")
         active_red_df = red_df[red_df["Reduction Finish"] > ph_now].copy()
         if active_red_df.empty:
             st.info("No active sample batch to display.")
@@ -1291,7 +1295,7 @@ if st.session_state.batches:
             fig_plate.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_plate, use_container_width=True)
 
-        st.subheader("Drying Oven Allocation")
+        lab_section_title("Drying Oven Assignment Chart")
         dry_plot = []
         active_dry_df = dry_df[dry_df["Finish"] > ph_now].copy()
         for _, r in active_dry_df.iterrows():
@@ -1314,7 +1318,7 @@ if st.session_state.batches:
             fig_dry.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_dry, use_container_width=True)
 
-        st.subheader("Crushing Personnel Allocation")
+        lab_section_title("Crushing Personnel Assignment Chart")
         crush_df["Lane"] = crush_df.apply(lambda x: f"{x['Batch']} ({x['Personnel']}P)", axis=1)
         active_crush_df = crush_df[crush_df["Finish"] > ph_now].copy()
         if active_crush_df.empty:
@@ -1325,7 +1329,7 @@ if st.session_state.batches:
             fig_cr.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_cr, use_container_width=True)
 
-        st.subheader("Pulverizer Allocation")
+        lab_section_title("Pulverizer Assignment Chart")
         active_pulv_df = pulv_df[pulv_df["Finish"] > ph_now].copy()
         if active_pulv_df.empty:
             st.info("No active sample batch to display.")
@@ -1335,7 +1339,7 @@ if st.session_state.batches:
             fig_p.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_p, use_container_width=True)
 
-        st.subheader("Weighing Chart")
+        lab_section_title("Weighing Chart")
         active_weighing_df = weighing_df[weighing_df["Finish"] > ph_now].copy()
         if active_weighing_df.empty:
             st.info("No active sample batch to display.")
@@ -1345,7 +1349,7 @@ if st.session_state.batches:
             fig_w.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_w, use_container_width=True)
 
-        st.subheader("Pelletizing Chart")
+        lab_section_title("Pelletizing Chart")
         active_pellet_df = pellet_df[pellet_df["Finish"] > ph_now].copy()
         if active_pellet_df.empty:
             st.info("No active sample batch to display.")
@@ -1355,7 +1359,7 @@ if st.session_state.batches:
             fig_pel.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_pel, use_container_width=True)
 
-        st.subheader("XRF Allocation Chart")
+        lab_section_title("XRF Assignment Chart")
         active_xrf_df = xrf_df[xrf_df["Finish"] > ph_now].copy()
         if active_xrf_df.empty:
             st.info("No active sample batch to display.")
