@@ -1,3 +1,4 @@
+import base64
 import html
 import itertools
 import math
@@ -10,6 +11,9 @@ import json
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+APP_DIR = Path(__file__).resolve().parent
+LOGO_PATH = APP_DIR / ".devcontainer" / "viber_image_2024-02-27_14-50-04-299.jpg"
 
 st.set_page_config(page_title="Sample Workflow Optimizer", layout="wide")
 st.markdown(
@@ -37,12 +41,25 @@ st.markdown(
     }
     h1, h2, h3, h4, h5, h6, p, label, .stMarkdown, .stCaption { color: #E9F5EF !important; }
     .kmi-header {
+        align-items: center;
         background: #1f2c1f;
         border: 1px solid #6f8a65;
         border-radius: 12px;
+        display: flex;
+        gap: 1rem;
         padding: 0.9rem 1.2rem;
         margin-top: 2.2rem;
         margin-bottom: 1rem;
+    }
+    .kmi-logo {
+        border-radius: 10px;
+        flex: 0 0 auto;
+        height: 96px;
+        object-fit: contain;
+        width: 96px;
+    }
+    .kmi-header-text {
+        min-width: 0;
     }
     .kmi-title {
         font-size: 1.75rem;
@@ -153,20 +170,28 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+logo_html = ""
+if LOGO_PATH.exists():
+    encoded_logo = base64.b64encode(LOGO_PATH.read_bytes()).decode("utf-8")
+    logo_html = (
+        '<img class="kmi-logo" '
+        'src="data:image/jpeg;base64,' + encoded_logo + '" '
+        'alt="Kafugan Mining Incorporated logo">'
+    )
+
 st.markdown(
-    """
+    f"""
     <div class="kmi-header">
-        <p class="kmi-title">KAFUGAN MINING INCORPORATED</p>
-        <p class="kmi-subtitle">Assay Department</p>
-        <p class="kmi-author">Created by: Engr. Dame Augustine Martije</p>
+        {logo_html}
+        <div class="kmi-header-text">
+            <p class="kmi-title">KAFUGAN MINING INCORPORATED</p>
+            <p class="kmi-subtitle">Assay Department</p>
+            <p class="kmi-author">Created by: Engr. Dame Augustine Martije</p>
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
-APP_DIR = Path(__file__).resolve().parent
-logo_path = APP_DIR / ".devcontainer" / "viber_image_2024-02-27_14-50-04-299.jpg"
-if logo_path.exists():
-    st.image(str(logo_path), width=180)
 st.title("SAMPLE WORKFLOW OPTIMIZER")
 PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
