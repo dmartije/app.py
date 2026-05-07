@@ -363,13 +363,18 @@ def lab_section_title(title):
     st.markdown(f'<div class="lab-table-card-title">{html.escape(title)}</div>', unsafe_allow_html=True)
 
 
-def lab_table_card(title, dataframe, caption=None, height="content"):
+def lab_table_card(title, dataframe, caption=None, height="content", column_config=None):
     """Render every dataframe in a consistent army-green laboratory card."""
     with st.container(border=True):
         lab_section_title(title)
         if caption:
             st.markdown(f'<div class="lab-table-caption">{html.escape(caption)}</div>', unsafe_allow_html=True)
-        st.dataframe(style_lab_table(dataframe), use_container_width=True, height=height)
+        st.dataframe(
+            style_lab_table(dataframe),
+            use_container_width=True,
+            height=height,
+            column_config=column_config,
+        )
 
 
 def lab_editor_card(title, dataframe, **editor_kwargs):
@@ -1187,7 +1192,15 @@ if st.session_state.batches:
         ).round(2)
         statuses = batch_status_at_time(overall_df, ph_now)
         finals["Status"] = finals["Batch"].map(statuses).fillna("Waiting to Start")
-        lab_table_card(table_section_title, finals)
+        lab_table_card(
+            table_section_title,
+            finals,
+            column_config={
+                "_index": st.column_config.Column(pinned=True),
+                "Batch": st.column_config.Column("Batch", pinned=True),
+                "Type": st.column_config.Column("Type", pinned=True),
+            },
+        )
 
         process_specs_title = "Process Time Specifications"
         spec_rows = [
