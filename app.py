@@ -1,3 +1,4 @@
+import itertools
 import math
 import time
 from datetime import datetime, timedelta
@@ -297,9 +298,7 @@ def within_window(ts):
 def ovens_available(ts):
     """Select active oven count based on the configured time window."""
     return ovens_high if within_window(ts) else ovens_low
-
-
-def schedule_batches(batches):
+    def schedule_batches(batches):
     """
     Build a full schedule for all batches in sequence.
 
@@ -597,8 +596,7 @@ def schedule_batches(batches):
                     },
                 ]
             )
-
-    overall_df = pd.DataFrame(overall_rows)
+                overall_df = pd.DataFrame(overall_rows)
 
     # --- Weighing (2 balances, priority-aware), Pelletizing, XRF allocation ---
     cool_steps = overall_df[overall_df["Step"] == "Cooling in Desiccator"].copy()
@@ -709,13 +707,8 @@ def schedule_batches(batches):
     return red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df
 
 
-def optimize_batch_order(batches, time_limit_seconds):
-    """
-    Try to minimize overall finish time by reordering batches.
-
-    For up to 8 batches, evaluate permutations until time limit.
-    For more than 8, fall back to a deterministic heuristic order.
-    """
+def optimize_batch_order(batches, time_limit_seconds=None):
+    """Return the deterministic FIFO order with Sublot tie-break priority."""
     if not batches:
         return batches, "FEASIBLE", "No batches."
 
@@ -733,7 +726,96 @@ def optimize_batch_order(batches, time_limit_seconds):
         ),
     )
     ordered = [b for _, b in ordered_pairs]
-    return ordered, "FEASIBLE", "FIFO ordering applied (Sublot prioritized on same-ready contention)."
+    return ordered, "FEASIBLE", "FIFO Sublot Priority ordering applied."
+
+
+def evaluate_order(order):
+    """Score a candidate order by completion time, with Sublot priority as a soft tie-breaker."""
+    _, _, _, _, candidate_overall_df, _, _, _ = schedule_batches(order)
+    if candidate_overall_df.empty:
+        return (pd.Timestamp.max, pd.Timestamp.max, pd.Timestamp.max)
+
+    finish_by_batch = candidate_overall_df.groupby("Batch")["Finish"].max()
+    makespan = finish_by_batch.max()
+    sublot_ids = [b["batch_id"] for b in order if b["sample_type"] == "Sublot"]
+    sublot_total = sum((finish_by_batch[bid].value if bid in finish_by_batch else pd.Timestamp.max.value) for bid in sublot_ids)
+    total_completion = sum(ts.value for ts in finish_by_batch)
+    return (makespan.value, sublot_total, total_completion)
+
+
+def improve_order_with_adjacent_swaps(initial_order, deadline):
+    """Improve a large-batch heuristic order while respecting the solver time limit."""
+    best_order = list(initial_order)
+    best_score = evaluate_order(best_order)
+    improved = True
+
+    while improved and time.monotonic() < deadline:
+        improved = False
+        for idx in range(len(best_order) - 1):
+            if time.monotonic() >= deadline:
+                break
+            candidate = best_order[:]
+            candidate[idx], candidate[idx + 1] = candidate[idx + 1], candidate[idx]
+            candidate_score = evaluate_order(candidate)
+            if candidate_score < best_score:
+                best_order = candidate
+                best_score = candidate_score
+                improved = True
+
+    return best_order, best_score
+
+
+def optimize_soft_priority_order(batches, time_limit_seconds):
+    """
+    Search for the order with the least overall completion time.
+
+    Sublot priority is treated as a soft tie-breaker after the overall completion
+    time, so the solver can choose a faster total schedule when one exists.
+    """
+    if not batches:
+        return batches, "FEASIBLE", "No batches."
+
+    deadline = time.monotonic() + max(1, int(time_limit_seconds))
+    fifo_order, _, _ = optimize_batch_order(batches)
+    best_order = fifo_order
+    best_score = evaluate_order(best_order)
+    evaluated = 1
+
+    if len(batches) <= 8:
+        for candidate in itertools.permutations(batches):
+            if time.monotonic() >= deadline:
+                return (
+                    best_order,
+                    "TIME_LIMIT",
+                    f"Soft Priority solver evaluated {evaluated} order(s) within {time_limit_seconds} seconds and returned the best schedule found.",
+                )
+            candidate_order = list(candidate)
+            candidate_score = evaluate_order(candidate_order)
+            evaluated += 1
+            if candidate_score < best_score:
+                best_order = candidate_order
+                best_score = candidate_score
+        return (
+            best_order,
+            "OPTIMAL",
+            f"Soft Priority solver evaluated all {evaluated} order(s) and minimized overall completion time.",
+        )
+
+    heuristic_order = sorted(
+        batches,
+        key=lambda b: (
+            b["received_at"],
+            0 if b["sample_type"] == "Sublot" else 1,
+            int(b["qty"]),
+            b["batch_id"],
+        ),
+    )
+    best_order, best_score = improve_order_with_adjacent_swaps(heuristic_order, deadline)
+    return (
+        best_order,
+        "FEASIBLE",
+        f"Soft Priority solver used a time-limited heuristic for {len(batches)} batches and returned the best schedule found within {time_limit_seconds} seconds.",
+    )
 
 
 def batch_status_at_time(overall_df, ts):
@@ -767,19 +849,38 @@ def show_legend_on_right(fig, title_text):
         margin=dict(r=160),
     )
     return fig
-    
 
-refresh_clicked = st.button("Refresh Schedule")
-if refresh_clicked:
-    st.success("Schedule is refreshed.")
-if refresh_clicked or st.session_state.batches:
-    best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches, solver_time_limit)
+
+if "schedule_mode" not in st.session_state:
+    st.session_state.schedule_mode = "fifo"
+
+fifo_col, soft_col = st.columns(2)
+with fifo_col:
+    fifo_clicked = st.button("FIFO Sublot Priority Button")
+with soft_col:
+    soft_clicked = st.button("Soft Priority Solver Button")
+
+if fifo_clicked:
+    st.session_state.schedule_mode = "fifo"
+    st.success("Showing FIFO Sublot Priority")
+if soft_clicked:
+    st.session_state.schedule_mode = "soft"
+    st.success("Showing Soft Priority")
+
+if st.session_state.batches:
+    if st.session_state.schedule_mode == "soft":
+        best_order, solver_status, solver_message = optimize_soft_priority_order(st.session_state.batches, solver_time_limit)
+        schedule_mode_label = "Soft Priority"
+    else:
+        best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches)
+        schedule_mode_label = "FIFO Sublot Priority"
+
     red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df = schedule_batches(best_order)
 
     if overall_df.empty:
         st.warning("No batches to schedule.")
     else:
-        st.info(f"Solver Status: {solver_status}")
+        st.info(f"Schedule Mode: {schedule_mode_label} | Solver Status: {solver_status}")
         st.caption(solver_message)
 
         st.subheader("Batch Completion Summary")
@@ -794,7 +895,7 @@ if refresh_clicked or st.session_state.batches:
         ]
 
         prep_df = overall_df[overall_df["Step"].isin(sample_prep_steps)].copy()
-        lab_df = overall_df[overall_df["Step"].isin(lab_steps)].copy()
+                lab_df = overall_df[overall_df["Step"].isin(lab_steps)].copy()
 
         prep_summary = (
             prep_df.groupby(["Batch", "Type"])
