@@ -25,11 +25,17 @@ st.markdown(
     header[data-testid="stHeader"],
     [data-testid="stToolbar"],
     [data-testid="stDecoration"],
+    [data-testid="stSidebarHeader"],
     #MainMenu,
     footer {
         display: none !important;
         visibility: hidden !important;
         height: 0 !important;
+    }
+    [data-testid="stAppViewContainer"] > .main,
+    [data-testid="stMain"] {
+        padding-top: 0rem !important;
+        margin-top: 0rem !important;
     }
     .stApp {
         background-color: #081C15;
@@ -39,15 +45,18 @@ st.markdown(
         background-color: #0B2E26 !important;
         border-right: 1px solid #2D6A4F;
     }
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
     section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
-        padding-top: 0rem;
+        padding-top: 0rem !important;
+        margin-top: 0rem !important;
     }
     section[data-testid="stSidebar"] * { color: #E9F5EF !important; }
     .block-container {
         background: #0B2E26;
         border: 1px solid #2D6A4F;
         border-radius: 14px;
-        padding-top: 1rem;
+        padding-top: 0rem !important;
+        margin-top: 0rem !important;
         padding-bottom: 2rem;
         padding-left: 1.2rem;
         padding-right: 1.2rem;
@@ -61,7 +70,7 @@ st.markdown(
         display: flex;
         gap: 1rem;
         padding: 0.9rem 1.2rem;
-        margin-top: 2.2rem;
+        margin-top: 0rem;
         margin-bottom: 1rem;
     }
     .kmi-logo {
