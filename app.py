@@ -208,11 +208,20 @@ def style_lab_table(df):
         color = "#F7F9F3" if row_position % 2 == 0 else "#EEF3E8"
         return [f"background-color: {color}; color: #17251D;" for _ in row]
 
+    def format_numeric(value):
+        if pd.isna(value):
+            return ""
+        rounded = round(float(value), 2)
+        if math.isclose(rounded, round(rounded)):
+            return f"{rounded:,.0f}"
+        return f"{rounded:,.2f}".rstrip("0").rstrip(".")
+
     formatters = {
         col: (lambda value: "" if pd.isna(value) else pd.Timestamp(value).strftime("%Y-%m-%d %I:%M %p"))
         for col in datetime_cols
     }
-
+    formatters.update({col: format_numeric for col in numeric_cols})
+    
     styled = styled.apply(zebra_rows, axis=1)
     styled = styled.format(formatters)
     if text_cols:
