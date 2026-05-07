@@ -65,7 +65,7 @@ st.markdown(
     .sidebar-kmi-logo {
         display: block;
         height: 63px;
-        margin: 0 auto 1rem auto;
+        margin: 0 0 1rem 0;
         object-fit: contain;
         width: 183px;
     }
@@ -194,7 +194,7 @@ st.markdown(
         <div class="kmi-header-text">
             <p class="kmi-title">KAFUGAN MINING INCORPORATED</p>
             <p class="kmi-subtitle">Assay Department</p>
-            <p class="kmi-author">Created by: Engr. Dame Augustine Martije Version 0: 05/07/2026</p>
+            <p class="kmi-author">Created by: Engr. Dame Augustine Martije<br>Version 0: 05/07/2026</p>
         </div>
     </div>
     """,
