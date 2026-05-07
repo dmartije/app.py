@@ -168,6 +168,12 @@ st.markdown(
         border-color: #D7E0D1 !important;
         min-height: 38px !important;
     }
+    [data-testid="stDataEditor"] [role="row"]:nth-child(odd) [role="gridcell"] {
+        background-color: #F7F9F3 !important;
+    }
+    [data-testid="stDataEditor"] [role="row"]:nth-child(even) [role="gridcell"] {
+        background-color: #EEF3E8 !important;
+    }
     [data-testid="stDataFrame"] [role="row"]:hover [role="gridcell"],
     [data-testid="stDataEditor"] [role="row"]:hover [role="gridcell"] {
         background-color: #E5EEDC !important;
@@ -1306,10 +1312,53 @@ if st.session_state.batches:
             + " hr)"
         )
         step_batch_summary["Batch Label"] = step_batch_summary["Batch"] + " - " + step_batch_summary["Type"]
-        lab_table_card(
-            step_summary_title,
-            step_batch_summary[["Batch Label", "Step", "Start", "Finish", "Duration (Min/Hr)"]],
-        )
+
+        with st.container(border=True):
+            lab_section_title(step_summary_title)
+            filter_col_batch, filter_col_step = st.columns(2)
+            batch_filter_options = ["All batches"] + step_batch_summary["Batch Label"].drop_duplicates().tolist()
+            available_steps = [
+                step
+                for step in step_order
+                if step in set(step_batch_summary["Step"].astype(str))
+            ]
+            step_filter_options = ["All processing steps"] + available_steps
+            with filter_col_batch:
+                selected_batch_label = st.selectbox(
+                    "Select batch",
+                    batch_filter_options,
+                    help="Choose a batch to show only that batch's processing-step summary.",
+                )
+            with filter_col_step:
+                selected_step = st.selectbox(
+                    "Select processing step",
+                    step_filter_options,
+                    help="Choose a processing step to show that step across all batches.",
+                )
+
+            filtered_step_summary = step_batch_summary.copy()
+            if selected_batch_label != "All batches":
+                filtered_step_summary = filtered_step_summary[
+                    filtered_step_summary["Batch Label"] == selected_batch_label
+                ]
+            if selected_step != "All processing steps":
+                filtered_step_summary = filtered_step_summary[
+                    filtered_step_summary["Step"].astype(str) == selected_step
+                ]
+
+            st.dataframe(
+                style_lab_table(
+                    filtered_step_summary[[
+                        "Batch Label",
+                        "Step",
+                        "Start",
+                        "Finish",
+                        "Duration (Min/Hr)",
+                    ]]
+                ),
+                use_container_width=True,
+                height="content",
+            )
 
         lab_section_title("Overall Sample Prep and Laboratory Process Chart")
         active_overall_df = overall_df[overall_df["Finish"] > ph_now].copy()
