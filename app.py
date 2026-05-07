@@ -1,3 +1,4 @@
+import html
 import itertools
 import math
 import time
@@ -91,12 +92,62 @@ st.markdown(
         background-color: #1B4332 !important;
         color: #FFFFFF !important;
     }
-    [data-testid="stDataFrame"] {
-        background-color: #0B2E26 !important;
-        border: 1px solid #2D6A4F !important;
-        border-radius: 12px;
+    .lab-table-card-title {
+        color: #F5F7F2;
+        font-size: 1.08rem;
+        font-weight: 700;
+        letter-spacing: 0.02rem;
+        margin-bottom: 0.65rem;
+        padding-bottom: 0.45rem;
+        border-bottom: 1px solid #6B8E5A;
     }
-    [data-testid="stDataFrame"] * { color: #E9F5EF !important; }
+    .lab-table-caption {
+        color: #D8E6D0;
+        font-size: 0.88rem;
+        margin-top: -0.35rem;
+        margin-bottom: 0.75rem;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-color: #6B8E5A !important;
+        background: linear-gradient(145deg, #102E24 0%, #0B241D 100%) !important;
+        border-radius: 16px !important;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+    }
+    [data-testid="stDataFrame"],
+    [data-testid="stDataEditor"] {
+        background-color: #F7F9F3 !important;
+        border: 1px solid #A6B99A !important;
+        border-radius: 14px !important;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+        overflow: hidden !important;
+    }
+    [data-testid="stDataFrame"] div[role="grid"],
+    [data-testid="stDataEditor"] div[role="grid"] {
+        color: #17251D !important;
+        background-color: #F7F9F3 !important;
+        font-size: 0.92rem !important;
+    }
+    [data-testid="stDataFrame"] [role="columnheader"],
+    [data-testid="stDataEditor"] [role="columnheader"] {
+        background-color: #1F3B2D !important;
+        color: #FFFFFF !important;
+        font-weight: 700 !important;
+        border-color: #6B8E5A !important;
+    }
+    [data-testid="stDataFrame"] [role="gridcell"],
+    [data-testid="stDataEditor"] [role="gridcell"] {
+        color: #17251D !important;
+        border-color: #D7E0D1 !important;
+        min-height: 38px !important;
+    }
+    [data-testid="stDataFrame"] [role="row"]:hover [role="gridcell"],
+    [data-testid="stDataEditor"] [role="row"]:hover [role="gridcell"] {
+        background-color: #E5EEDC !important;
+    }
+    [data-testid="stDataEditor"] input[type="checkbox"] {
+        accent-color: #2D6A4F;
+        margin: auto;
+    }
     .stAlert { background: #1B4332 !important; border: 1px solid #95D5B2 !important; color: #E9F5EF !important; }
     </style>
     """,
@@ -142,6 +193,114 @@ def save_batches(records):
         row["received_at"] = str(pd.Timestamp(row["received_at"]))
         serializable.append(row)
     BATCH_STORE.write_text(json.dumps(serializable, indent=2))
+
+
+def style_lab_table(df):
+    """Apply reusable QA/QC laboratory dashboard styling to table data."""
+    styled = df.style
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    datetime_cols = df.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns.tolist()
+    center_cols = [col for col in df.columns if str(col).lower() in {"remove", "select"}]
+    text_cols = [col for col in df.columns if col not in numeric_cols + datetime_cols + center_cols]
+
+    def zebra_rows(row):
+        row_position = df.index.get_loc(row.name)
+        color = "#F7F9F3" if row_position % 2 == 0 else "#EEF3E8"
+        return [f"background-color: {color}; color: #17251D;" for _ in row]
+
+    formatters = {
+        col: (lambda value: "" if pd.isna(value) else pd.Timestamp(value).strftime("%Y-%m-%d %I:%M %p"))
+        for col in datetime_cols
+    }
+
+    styled = styled.apply(zebra_rows, axis=1)
+    styled = styled.format(formatters)
+    if text_cols:
+        styled = styled.set_properties(
+            subset=text_cols,
+            **{
+                "text-align": "left",
+                "font-size": "14px",
+                "line-height": "1.45",
+                "padding": "10px 12px",
+                "color": "#17251D",
+            },
+        )
+    if numeric_cols:
+        styled = styled.set_properties(
+            subset=numeric_cols,
+            **{
+                "text-align": "right",
+                "font-size": "14px",
+                "line-height": "1.45",
+                "padding": "10px 12px",
+                "color": "#17251D",
+            },
+        )
+    if datetime_cols:
+        styled = styled.set_properties(
+            subset=datetime_cols,
+            **{
+                "text-align": "left",
+                "font-size": "14px",
+                "line-height": "1.45",
+                "padding": "10px 12px",
+                "white-space": "nowrap",
+                "color": "#17251D",
+            },
+        )
+    if center_cols:
+        styled = styled.set_properties(
+            subset=center_cols,
+            **{
+                "text-align": "center",
+                "font-size": "14px",
+                "line-height": "1.45",
+                "padding": "10px 12px",
+                "color": "#17251D",
+            },
+        )
+
+    return styled.set_table_styles(
+        [
+            {
+                "selector": "thead th",
+                "props": [
+                    ("background-color", "#1F3B2D"),
+                    ("color", "#FFFFFF"),
+                    ("font-weight", "700"),
+                    ("font-size", "14px"),
+                    ("text-transform", "none"),
+                    ("border-bottom", "2px solid #6B8E5A"),
+                    ("padding", "11px 12px"),
+                ],
+            },
+            {
+                "selector": "tbody tr:hover td",
+                "props": [("background-color", "#E5EEDC"), ("color", "#17251D")],
+            },
+            {
+                "selector": "tbody td",
+                "props": [("border-bottom", "1px solid #D7E0D1")],
+            },
+        ]
+    )
+
+
+def lab_table_card(title, dataframe, caption=None, height=None):
+    """Render every dataframe in a consistent army-green laboratory card."""
+    with st.container(border=True):
+        st.markdown(f'<div class="lab-table-card-title">{html.escape(title)}</div>', unsafe_allow_html=True)
+        if caption:
+            st.markdown(f'<div class="lab-table-caption">{html.escape(caption)}</div>', unsafe_allow_html=True)
+        st.dataframe(style_lab_table(dataframe), use_container_width=True, height=height)
+
+
+def lab_editor_card(title, dataframe, **editor_kwargs):
+    """Render editable tables with the same laboratory card treatment."""
+    with st.container(border=True):
+        st.markdown(f'<div class="lab-table-card-title">{html.escape(title)}</div>', unsafe_allow_html=True)
+        return st.data_editor(dataframe, use_container_width=True, **editor_kwargs)
 
 # Global scheduling constraints.
 TIME_UNIT = 5
@@ -271,13 +430,24 @@ if add_clicked and new_batch_id.strip():
     except Exception as e:
         st.error(f"Batch added in session but failed to save to disk: {e}")
 
-st.subheader("Batch List Table")
 if st.session_state.batches:
     edit_df = pd.DataFrame(st.session_state.batches)
-    edit_df["delete"] = False
-    edited = st.data_editor(edit_df, use_container_width=True, num_rows="dynamic")
+    edit_df["Remove"] = False
+    edited = lab_editor_card(
+        "Batch List Table",
+        edit_df,
+        num_rows="dynamic",
+        column_config={
+            "Remove": st.column_config.CheckboxColumn(
+                "Remove",
+                help="Select rows to remove when applying edits.",
+                default=False,
+            )
+        },
+    )
     if st.button("Apply Batch Edits / Deletes"):
-        kept = edited[~edited["delete"]].drop(columns=["delete"]).copy()
+        remove_mask = edited["Remove"].fillna(False).astype(bool)
+        kept = edited[~remove_mask].drop(columns=["Remove"]).copy()
         kept["qty"] = kept["qty"].astype(int)
         kept["received_at"] = pd.to_datetime(kept["received_at"])
         st.session_state.batches = kept.to_dict("records")
@@ -298,6 +468,8 @@ def within_window(ts):
 def ovens_available(ts):
     """Select active oven count based on the configured time window."""
     return ovens_high if within_window(ts) else ovens_low
+
+
 def schedule_batches(batches):
     """
     Build a full schedule for all batches in sequence.
@@ -596,6 +768,7 @@ def schedule_batches(batches):
                     },
                 ]
             )
+
     overall_df = pd.DataFrame(overall_rows)
 
     # --- Weighing (2 balances, priority-aware), Pelletizing, XRF allocation ---
@@ -619,7 +792,6 @@ def schedule_batches(batches):
 
     def task_priority(t):
         return (0 if t["Type"] == "Sublot" else 1, t["ready"], t["Batch"], t["Sample"])
-
     pending = weighing_tasks[:]
     while pending:
         machine = min(balances, key=lambda m: balances[m])
@@ -866,7 +1038,6 @@ if fifo_clicked:
 if soft_clicked:
     st.session_state.schedule_mode = "soft"
     st.success("Showing Soft Priority")
-
 if st.session_state.batches:
     if st.session_state.schedule_mode == "soft":
         best_order, solver_status, solver_message = optimize_soft_priority_order(st.session_state.batches, solver_time_limit)
@@ -883,7 +1054,7 @@ if st.session_state.batches:
         st.info(f"Schedule Mode: {schedule_mode_label} | Solver Status: {solver_status}")
         st.caption(solver_message)
 
-        st.subheader("Batch Completion Summary")
+        table_section_title = "Batch Completion Summary"
         sample_prep_steps = ["Sorting", "Pre-Drying", "Reduction", "Drying", "Crushing", "Pulverizing & Sieving"]
         lab_steps = [
             "Laboratory Sorting",
@@ -927,9 +1098,9 @@ if st.session_state.batches:
         ).round(2)
         statuses = batch_status_at_time(overall_df, ph_now)
         finals["Status"] = finals["Batch"].map(statuses).fillna("Waiting to Start")
-        st.dataframe(finals, use_container_width=True)
+        lab_table_card(table_section_title, finals)
 
-        st.subheader("Process Time Specifications")
+        process_specs_title = "Process Time Specifications"
         spec_rows = [
             {
                 "Process Step": "Sorting",
@@ -1042,9 +1213,9 @@ if st.session_state.batches:
                 "Notes": f"30 min per 10-sample run; parallel across {xrf_machine_count} XRF machine(s).",
             },
         ]
-        st.dataframe(pd.DataFrame(spec_rows), use_container_width=True)
+        lab_table_card(process_specs_title, pd.DataFrame(spec_rows))
 
-        st.subheader("Summary per Processing Step (per Batch)")
+        step_summary_title = "Summary per Processing Step (per Batch)"
         step_order = [
             "Sorting",
             "Pre-Drying",
@@ -1072,9 +1243,9 @@ if st.session_state.batches:
             + " hr)"
         )
         step_batch_summary["Batch Label"] = step_batch_summary["Batch"] + " - " + step_batch_summary["Type"]
-        st.dataframe(
+        lab_table_card(
+            step_summary_title,
             step_batch_summary[["Batch Label", "Step", "Start", "Finish", "Duration (Min/Hr)"]],
-            use_container_width=True,
         )
 
         st.subheader("Overall Sample Prep and Laboratory Process Chart")
