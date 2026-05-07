@@ -14,6 +14,7 @@ import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / ".devcontainer" / "viber_image_2024-02-27_14-50-04-299.jpg"
+SIDEBAR_LOGO_PATH = APP_DIR / ".devcontainer" / "KMI Logo.jpg"
 
 st.set_page_config(page_title="Sample Workflow Optimizer", layout="wide")
 st.markdown(
@@ -60,6 +61,13 @@ st.markdown(
     }
     .kmi-header-text {
         min-width: 0;
+    }
+    .sidebar-kmi-logo {
+        display: block;
+        height: 63px;
+        margin: 0 auto 1rem auto;
+        object-fit: contain;
+        width: 183px;
     }
     .kmi-title {
         font-size: calc(1.75rem + 3px);
@@ -428,6 +436,18 @@ def per_sample_minutes(step, sample_type, material):
     return cfg
 
 
+sidebar_logo_html = ""
+if SIDEBAR_LOGO_PATH.exists():
+    encoded_sidebar_logo = base64.b64encode(SIDEBAR_LOGO_PATH.read_bytes()).decode("utf-8")
+    sidebar_logo_html = (
+        '<img class="sidebar-kmi-logo" '
+        'src="data:image/jpeg;base64,' + encoded_sidebar_logo + '" '
+        'alt="KMI logo">'
+    )
+
+if sidebar_logo_html:
+    st.sidebar.markdown(sidebar_logo_html, unsafe_allow_html=True)
+    
 solver_time_limit = st.sidebar.slider("Solver Time Limit (seconds)", min_value=3, max_value=60, value=15)
 
 # Persist batches and selected schedule mode across Streamlit reruns.
