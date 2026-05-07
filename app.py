@@ -62,14 +62,14 @@ st.markdown(
         min-width: 0;
     }
     .kmi-title {
-        font-size: 1.75rem;
+        font-size: calc(1.75rem + 3px);
         font-weight: 700;
         margin: 0;
         color: #d9e5cd;
         letter-spacing: 0.5px;
     }
     .kmi-subtitle {
-        font-size: 1.05rem;
+        font-size: calc(1.05rem + 2px);
         margin: 0.2rem 0 0 0;
         color: #d9e5cd;
     }
@@ -186,7 +186,7 @@ st.markdown(
         <div class="kmi-header-text">
             <p class="kmi-title">KAFUGAN MINING INCORPORATED</p>
             <p class="kmi-subtitle">Assay Department</p>
-            <p class="kmi-author">Created by: Engr. Dame Augustine Martije</p>
+            <p class="kmi-author">Created by: Engr. Dame Augustine Martije Version 0: 05/07/2026</p>
         </div>
     </div>
     """,
@@ -428,16 +428,6 @@ def per_sample_minutes(step, sample_type, material):
     return cfg
 
 
-st.sidebar.markdown("### Shared Capacity Inputs")
-personnel_total = st.sidebar.number_input("Personnel Present", min_value=1, max_value=100, value=20)
-window_start = st.sidebar.time_input("Higher-capacity window start", value=datetime(2026, 5, 4, 14, 0).time())
-window_end = st.sidebar.time_input("Higher-capacity window end", value=datetime(2026, 5, 5, 6, 0).time())
-
-st.sidebar.markdown("### Equipment Settings")
-ovens_high = st.sidebar.selectbox("Ovens operating during higher-capacity window", [1, 2], index=1)
-ovens_low = st.sidebar.selectbox("Ovens operating outside that window", [1, 2], index=0)
-pulverizer_count = st.sidebar.selectbox("Pulverizers operating", [1, 2], index=1)
-xrf_machine_count = st.sidebar.selectbox("XRF machines operating", [1, 2], index=1)
 solver_time_limit = st.sidebar.slider("Solver Time Limit (seconds)", min_value=3, max_value=60, value=15)
 
 # Persist batches and selected schedule mode across Streamlit reruns.
@@ -454,6 +444,17 @@ with st.sidebar.form("add_batch_form", clear_on_submit=True):
     new_qty = st.number_input("Number of Samples", min_value=1, max_value=10000, value=1)
     new_received = st.datetime_input("Date and Time Received", value=ph_now.to_pydatetime())
     add_clicked = st.form_submit_button("Add Batch")
+
+st.sidebar.markdown("### Shared Capacity Inputs")
+personnel_total = st.sidebar.number_input("Personnel Present", min_value=1, max_value=100, value=20)
+window_start = st.sidebar.time_input("Higher-capacity window start", value=datetime(2026, 5, 4, 14, 0).time())
+window_end = st.sidebar.time_input("Higher-capacity window end", value=datetime(2026, 5, 5, 6, 0).time())
+
+st.sidebar.markdown("### Equipment Settings")
+ovens_high = st.sidebar.selectbox("Ovens operating during higher-capacity window", [1, 2], index=1)
+ovens_low = st.sidebar.selectbox("Ovens operating outside that window", [1, 2], index=0)
+pulverizer_count = st.sidebar.selectbox("Pulverizers operating", [1, 2], index=1)
+xrf_machine_count = st.sidebar.selectbox("XRF machines operating", [1, 2], index=1)
 
 if add_clicked and new_batch_id.strip():
     st.session_state.batches.append(
