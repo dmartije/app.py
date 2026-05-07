@@ -163,7 +163,8 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-logo_path = Path(r"C:\Users\damar\OneDrive\Documents\Dame Files\Dame Files\KMI header footer\viber_image_2024-02-27_14-50-04-299.jpg")
+APP_DIR = Path(__file__).resolve().parent
+logo_path = APP_DIR / ".devcontainer" / "KMI Logo.jpg"
 if logo_path.exists():
     st.image(str(logo_path), width=180)
 st.title("SAMPLE WORKFLOW OPTIMIZER")
