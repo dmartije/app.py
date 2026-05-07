@@ -22,6 +22,15 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    header[data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    [data-testid="stDecoration"],
+    #MainMenu,
+    footer {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+    }
     .stApp {
         background-color: #081C15;
         color: #E9F5EF;
