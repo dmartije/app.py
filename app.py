@@ -31,7 +31,7 @@ st.markdown(
         border-right: 1px solid #2D6A4F;
     }
     section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
-        padding-top: 0.75rem;
+        padding-top: 0rem;
     }
     section[data-testid="stSidebar"] * { color: #E9F5EF !important; }
     .block-container {
