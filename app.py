@@ -86,7 +86,7 @@ st.markdown(
     .sidebar-kmi-logo {
         display: block;
         height: 63px;
-        margin: 0 0 1rem 0;
+        margin: 2rem auto 1rem auto;
         object-fit: contain;
         width: 183px;
     }
@@ -186,10 +186,12 @@ st.markdown(
         border-color: #D7E0D1 !important;
         min-height: 38px !important;
     }
-    [data-testid="stDataEditor"] [role="row"]:nth-child(odd) [role="gridcell"] {
+    [data-testid="stDataEditor"] [role="rowgroup"] [role="row"]:nth-child(odd) [role="gridcell"],
+    [data-testid="stDataEditor"] tbody tr:nth-child(odd) td[role="gridcell"] {
         background-color: #F7F9F3 !important;
     }
-    [data-testid="stDataEditor"] [role="row"]:nth-child(even) [role="gridcell"] {
+    [data-testid="stDataEditor"] [role="rowgroup"] [role="row"]:nth-child(even) [role="gridcell"],
+    [data-testid="stDataEditor"] tbody tr:nth-child(even) td[role="gridcell"] {
         background-color: #EEF3E8 !important;
     }
     [data-testid="stDataFrame"] [role="row"]:hover [role="gridcell"],
@@ -374,7 +376,7 @@ def lab_editor_card(title, dataframe, **editor_kwargs):
     """Render editable tables with the same laboratory card treatment."""
     with st.container(border=True):
         lab_section_title(title)
-        return st.data_editor(dataframe, use_container_width=True, **editor_kwargs)
+        return st.data_editor(style_lab_table(dataframe), use_container_width=True, **editor_kwargs)
 
 # Global scheduling constraints.
 TIME_UNIT = 5
