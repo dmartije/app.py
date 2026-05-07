@@ -287,7 +287,7 @@ def style_lab_table(df):
     )
 
 
-def lab_table_card(title, dataframe, caption=None, height=None):
+def lab_table_card(title, dataframe, caption=None, height="content"):
     """Render every dataframe in a consistent army-green laboratory card."""
     with st.container(border=True):
         st.markdown(f'<div class="lab-table-card-title">{html.escape(title)}</div>', unsafe_allow_html=True)
