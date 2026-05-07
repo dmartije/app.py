@@ -251,7 +251,7 @@ with st.sidebar.form("add_batch_form", clear_on_submit=True):
     new_type = st.selectbox("Sample Type", list(rules.keys()))
     new_material = st.selectbox("Material", ["Limonite", "Saprolite"], index=0)
     new_qty = st.number_input("Number of Samples", min_value=1, max_value=10000, value=1)
-    new_received = st.datetime_input("Date and Time Received", value=datetime(2026, 5, 4, 8, 0))
+    new_received = st.datetime_input("Date and Time Received", value=ph_now.to_pydatetime())
     add_clicked = st.form_submit_button("Add Batch")
 
 if add_clicked and new_batch_id.strip():
@@ -759,7 +759,19 @@ def batch_status_at_time(overall_df, ts):
     return result
 
 
+def show_legend_on_right(fig, title_text):
+    """Keep color legends visible on the right side of timeline charts."""
+    fig.update_layout(
+        legend_title_text=title_text,
+        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
+        margin=dict(r=160),
+    )
+    return fig
+    
+
 refresh_clicked = st.button("Refresh Schedule")
+if refresh_clicked:
+    st.success("Schedule is refreshed.")
 if refresh_clicked or st.session_state.batches:
     best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches, solver_time_limit)
     red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df = schedule_batches(best_order)
@@ -979,9 +991,9 @@ if refresh_clicked or st.session_state.batches:
                 x_end="Finish",
                 y="Label",
                 color="Step",
-                text="Step",
                 category_orders={"Step": step_order},
             )
+            show_legend_on_right(fig_overall, "Process Step")
             fig_overall.update_yaxes(autorange="reversed")
             fig_overall.update_yaxes(title_text="Batch No.")
             st.plotly_chart(fig_overall, use_container_width=True)
@@ -992,8 +1004,9 @@ if refresh_clicked or st.session_state.batches:
             st.info("No active sample batch to display.")
         else:
             fig_plate = px.timeline(
-                active_red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Type", text="Batch"
+                active_red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Batch"
             )
+            show_legend_on_right(fig_plate, "Batch")
             fig_plate.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_plate, use_container_width=True)
 
@@ -1015,7 +1028,8 @@ if refresh_clicked or st.session_state.batches:
         if dry_plot_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_dry = px.timeline(dry_plot_df, x_start="Start", x_end="Finish", y="Slot", color="Type", text="Batch")
+            fig_dry = px.timeline(dry_plot_df, x_start="Start", x_end="Finish", y="Slot", color="Batch")
+            show_legend_on_right(fig_dry, "Batch")
             fig_dry.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_dry, use_container_width=True)
 
@@ -1025,7 +1039,8 @@ if refresh_clicked or st.session_state.batches:
         if active_crush_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_cr = px.timeline(active_crush_df, x_start="Start", x_end="Finish", y="Lane", color="Type", text="Qty")
+            fig_cr = px.timeline(active_crush_df, x_start="Start", x_end="Finish", y="Lane", color="Batch")
+            show_legend_on_right(fig_cr, "Batch")
             fig_cr.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_cr, use_container_width=True)
 
@@ -1034,7 +1049,8 @@ if refresh_clicked or st.session_state.batches:
         if active_pulv_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_p = px.timeline(active_pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+            fig_p = px.timeline(active_pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Batch")
+            show_legend_on_right(fig_p, "Batch")
             fig_p.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_p, use_container_width=True)
 
@@ -1043,7 +1059,8 @@ if refresh_clicked or st.session_state.batches:
         if active_weighing_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_w = px.timeline(active_weighing_df, x_start="Start", x_end="Finish", y="Balance", color="Type", text="Batch")
+            fig_w = px.timeline(active_weighing_df, x_start="Start", x_end="Finish", y="Balance", color="Batch")
+            show_legend_on_right(fig_w, "Batch")
             fig_w.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_w, use_container_width=True)
 
@@ -1052,7 +1069,8 @@ if refresh_clicked or st.session_state.batches:
         if active_pellet_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_pel = px.timeline(active_pellet_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+            fig_pel = px.timeline(active_pellet_df, x_start="Start", x_end="Finish", y="Machine", color="Batch")
+            show_legend_on_right(fig_pel, "Batch")
             fig_pel.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_pel, use_container_width=True)
 
@@ -1061,7 +1079,8 @@ if refresh_clicked or st.session_state.batches:
         if active_xrf_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_xrf = px.timeline(active_xrf_df, x_start="Start", x_end="Finish", y="Machine", color="Type", text="Batch")
+            fig_xrf = px.timeline(active_xrf_df, x_start="Start", x_end="Finish", y="Machine", color="Batch")
+            show_legend_on_right(fig_xrf, "Batch")
             fig_xrf.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_xrf, use_container_width=True)
 
