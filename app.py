@@ -298,7 +298,7 @@ def within_window(ts):
 def ovens_available(ts):
     """Select active oven count based on the configured time window."""
     return ovens_high if within_window(ts) else ovens_low
-    def schedule_batches(batches):
+def schedule_batches(batches):
     """
     Build a full schedule for all batches in sequence.
 
@@ -596,7 +596,7 @@ def ovens_available(ts):
                     },
                 ]
             )
-                overall_df = pd.DataFrame(overall_rows)
+    overall_df = pd.DataFrame(overall_rows)
 
     # --- Weighing (2 balances, priority-aware), Pelletizing, XRF allocation ---
     cool_steps = overall_df[overall_df["Step"] == "Cooling in Desiccator"].copy()
@@ -895,7 +895,7 @@ if st.session_state.batches:
         ]
 
         prep_df = overall_df[overall_df["Step"].isin(sample_prep_steps)].copy()
-                lab_df = overall_df[overall_df["Step"].isin(lab_steps)].copy()
+        lab_df = overall_df[overall_df["Step"].isin(lab_steps)].copy()
 
         prep_summary = (
             prep_df.groupby(["Batch", "Type"])
