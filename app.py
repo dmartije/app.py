@@ -30,6 +30,9 @@ st.markdown(
         background-color: #0B2E26 !important;
         border-right: 1px solid #2D6A4F;
     }
+    section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+        padding-top: 0.75rem;
+    }
     section[data-testid="stSidebar"] * { color: #E9F5EF !important; }
     .block-container {
         background: #0B2E26;
