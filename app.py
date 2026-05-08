@@ -1309,95 +1309,129 @@ def batch_status_at_time(overall_df, ts):
     return result
 
 
-CHART_PAPER_COLOR = "#102E24"
-CHART_PLOT_COLOR = "#0D261F"
-CHART_GRID_COLOR = "#355E48"
-CHART_TEXT_COLOR = "#E9F5EF"
-CHART_MUTED_TEXT_COLOR = "#CFE0C5"
-CHART_ACCENT_COLOR = "#95B46A"
+CHART_PAPER_COLOR = "#081C15"
+CHART_PLOT_COLOR = "#0B2A21"
+CHART_GRID_COLOR = "#355E3B"
+
+CHART_TEXT_COLOR = "#F4F7F5"
+CHART_MUTED_TEXT_COLOR = "#C7D6CC"
+CHART_ACCENT_COLOR = "#95D5B2"
+CHART_BAR_OUTLINE_COLOR = "#08120E"
+CHART_BAR_OPACITY = 0.92
 PROCESS_STEP_COLORS = {
-    "Sorting": "#8FB996",
-    "Pre-Drying": "#A8C686",
-    "Reduction": "#D6B85A",
-    "Drying": "#C98D45",
-    "Crushing": "#74A57F",
-    "Pulverizing & Sieving": "#6A994E",
-    "Laboratory Sorting": "#B7C77A",
-    "Laboratory Drying": "#DDA15E",
-    "Cooling in Desiccator": "#86A873",
-    "Weighing": "#CBD5C0",
-    "Pelletizing": "#E9C46A",
-    "XRF Analysis": "#52A675",
+    "Sorting": "#95D5B2",
+    "Pre-Drying": "#5BC0BE",
+    "Reduction": "#F9C74F",
+    "Drying": "#F95738",
+    "Crushing": "#4D7EA8",
+    "Pulverizing & Sieving": "#78C850",
+    "Laboratory Sorting": "#B8A1E3",
+    "Laboratory Drying": "#D9E650",
+    "Cooling in Desiccator": "#F15BB5",
+    "Weighing": "#EAEAEA",
+    "Pelletizing": "#FFB703",
+    "XRF Analysis": "#00B4D8",
 }
 BATCH_COLOR_SEQUENCE = [
-    "#A7C957",
-    "#6A994E",
-    "#386641",
-    "#DDA15E",
-    "#BC6C25",
-    "#D4A373",
-    "#7F9172",
-    "#588157",
-    "#C2C5AA",
-    "#A98467",
-    "#8FB996",
-    "#E9C46A",
+    "#95D5B2",
+    "#5BC0BE",
+    "#F9C74F",
+    "#F95738",
+    "#4D7EA8",
+    "#B8A1E3",
+    "#D9E650",
+    "#F15BB5",
+    "#FFB703",
+    "#00B4D8",
+    "#EAEAEA",
+    "#78C850",
 ]
 
 
-def apply_kmi_chart_theme(fig, legend_title_text):
-    """Apply the army-green KMI dashboard palette to Plotly timeline charts."""
+def timeline_chart_height(row_count, minimum=430, row_height=34, maximum=900):
+    """Scale timeline height so long process schedules stay readable without overwhelming the page."""
+    return min(maximum, max(minimum, 170 + int(row_count) * row_height))
+
+
+def apply_kmi_chart_theme(fig, legend_title_text, row_count=None):
+    """Apply the military-green laboratory palette to Plotly timeline charts."""
+    if row_count is not None:
+        fig.update_layout(height=timeline_chart_height(row_count))
+
     fig.update_layout(
         paper_bgcolor=CHART_PAPER_COLOR,
         plot_bgcolor=CHART_PLOT_COLOR,
         font=dict(color=CHART_TEXT_COLOR, family="Inter, sans-serif", size=13),
+        hovermode="closest",
+        bargap=0.24
         legend_title_text=legend_title_text,
         legend=dict(
-            bgcolor="rgba(13, 38, 31, 0.92)",
-            bordercolor=CHART_ACCENT_COLOR,
+            bgcolor="rgba(8, 28, 21, 0.90)",
+            bordercolor="rgba(149, 213, 178, 0.35)",
             borderwidth=1,
-            font=dict(color=CHART_TEXT_COLOR),
+            font=dict(color=CHART_TEXT_COLOR, size=12),
+            itemwidth=42,
+            itemsizing="constant",
             orientation="v",
-            title_font=dict(color=CHART_TEXT_COLOR),
+            title_font=dict(color=CHART_TEXT_COLOR, size=13),
+            tracegroupgap=8,
             x=1.02,
             xanchor="left",
             y=1,
             yanchor="top",
         ),
-        margin=dict(l=20, r=180, t=28, b=58),
+        margin=dict(l=28, r=215, t=34, b=72),
         hoverlabel=dict(
-            bgcolor="#F7F9F3",
-            bordercolor=CHART_ACCENT_COLOR,
-            font=dict(color="#17251D", family="Inter, sans-serif"),
+            bgcolor="#10261F",
+            bordercolor="#95D5B2",
+            font_color="#F4F7F5",
+            font_family="Inter, sans-serif",
+            font_size=13,
         ),
     )
     fig.update_xaxes(
+        automargin=True,
         color=CHART_MUTED_TEXT_COLOR,
-        gridcolor=CHART_GRID_COLOR,
-        linecolor=CHART_ACCENT_COLOR,
+        gridcolor="rgba(53, 94, 59, 0.42)",
+        griddash="dot",
+        linecolor="rgba(149, 213, 178, 0.75)",
         mirror=True,
         showgrid=True,
-        tickfont=dict(color=CHART_MUTED_TEXT_COLOR),
-        title_font=dict(color=CHART_TEXT_COLOR),
+        showline=True,
+        tickfont=dict(color=CHART_MUTED_TEXT_COLOR, size=12),
+        ticklabelposition="outside",
+        ticks="outside",
+        title_font=dict(color=CHART_TEXT_COLOR, size=13),
+        title_standoff=14,
         zeroline=False,
     )
     fig.update_yaxes(
+        automargin=True,
         color=CHART_MUTED_TEXT_COLOR,
-        gridcolor="rgba(53, 94, 72, 0.35)",
-        linecolor=CHART_ACCENT_COLOR,
+        gridcolor="rgba(53, 94, 59, 0.22)",
+        griddash="dot",
+        linecolor="rgba(149, 213, 178, 0.75)",
         mirror=True,
-        showgrid=False,
-        tickfont=dict(color=CHART_MUTED_TEXT_COLOR),
-        title_font=dict(color=CHART_TEXT_COLOR),
+        showgrid=True,
+        showline=True,
+        tickfont=dict(color=CHART_MUTED_TEXT_COLOR, size=12),
+        ticks="outside",
+        title_font=dict(color=CHART_TEXT_COLOR, size=13),
+        title_standoff=12,
         zeroline=False,
     )
-    fig.update_traces(marker_line_color="#0B2E26", marker_line_width=0.75, opacity=0.96)
+    fig.update_traces(
+        marker=dict(
+            line=dict(color="#08120E", width=1)
+        ),
+        opacity=CHART_BAR_OPACITY,
+    )
     return fig
 
 
-def show_legend_on_right(fig, title_text):
+def show_legend_on_right(fig, title_text, row_count=None):
     """Keep color legends visible on the right side of themed timeline charts."""
-    return apply_kmi_chart_theme(fig, title_text)
+    return apply_kmi_chart_theme(fig, title_text, row_count=row_count)
 
 if st.session_state.batches:
     if st.session_state.schedule_mode == "soft":
@@ -1707,7 +1741,7 @@ if st.session_state.batches:
                     "Final XRF Count",
                 ],
             )
-            show_legend_on_right(fig_overall, "Process Step")
+            show_legend_on_right(fig_overall, "Process Step", row_count=active_overall_df["Label"].nunique())
             fig_overall.update_yaxes(autorange="reversed")
             fig_overall.update_yaxes(title_text="Batch No.")
             st.plotly_chart(fig_overall, use_container_width=True)
@@ -1726,7 +1760,7 @@ if st.session_state.batches:
                 color_discrete_sequence=BATCH_COLOR_SEQUENCE,
                 hover_data=["Original Samples", "QC Added Samples", "Adjusted Processing Count"],
             )
-            show_legend_on_right(fig_plate, "Batch")
+            show_legend_on_right(fig_plate, "Batch", row_count=active_red_df["Plate"].nunique())
             fig_plate.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_plate, use_container_width=True)
 
@@ -1766,7 +1800,7 @@ if st.session_state.batches:
                     "Adjusted Processing Count",
                 ],
             )
-            show_legend_on_right(fig_dry, "Batch")
+            show_legend_on_right(fig_dry, "Batch", row_count=dry_plot_df["Slot"].nunique())
             fig_dry.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_dry, use_container_width=True)
 
@@ -1785,7 +1819,7 @@ if st.session_state.batches:
                 color_discrete_sequence=BATCH_COLOR_SEQUENCE,                
                 hover_data=["Original Samples", "QC Added Samples", "Adjusted Processing Count"],
             )
-            show_legend_on_right(fig_cr, "Batch")
+            show_legend_on_right(fig_cr, "Batch", row_count=active_crush_df["Lane"].nunique())
             fig_cr.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_cr, use_container_width=True)
 
@@ -1803,7 +1837,7 @@ if st.session_state.batches:
                 color_discrete_sequence=BATCH_COLOR_SEQUENCE,                
                 hover_data=["Original Samples", "QC Added Samples", "Adjusted Processing Count"],
             )
-            show_legend_on_right(fig_p, "Batch")
+            show_legend_on_right(fig_p, "Batch", row_count=active_pulv_df["Machine"].nunique())
             fig_p.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_p, use_container_width=True)
 
@@ -1826,7 +1860,7 @@ if st.session_state.batches:
                     "Final XRF Count",
                 ],
             )
-            show_legend_on_right(fig_w, "Batch")
+            show_legend_on_right(fig_w, "Batch", row_count=active_weighing_df["Balance"].nunique())
             fig_w.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_w, use_container_width=True)
 
@@ -1849,7 +1883,7 @@ if st.session_state.batches:
                     "Final XRF Count",
                 ],
             )
-            show_legend_on_right(fig_pel, "Batch")
+            show_legend_on_right(fig_pel, "Batch", row_count=active_pellet_df["Machine"].nunique())
             fig_pel.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_pel, use_container_width=True)
 
@@ -1873,7 +1907,7 @@ if st.session_state.batches:
                     "Final XRF Count",
                 ],
             )
-            show_legend_on_right(fig_xrf, "Batch")
+           show_legend_on_right(fig_xrf, "Batch", row_count=active_xrf_df["Machine"].nunique())
             fig_xrf.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_xrf, use_container_width=True)
 
