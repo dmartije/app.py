@@ -958,6 +958,7 @@ def schedule_batches(batches):
                     "Type": b["sample_type"],
                     "Qty": q_m,
                     **step_count_metadata(b["sample_type"], qty, "Pulverizing & Sieving"),
+                    "Machine": m,
                     "Start": p_start,
                     "Finish": p_finish,
                 }
