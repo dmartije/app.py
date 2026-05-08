@@ -1333,7 +1333,6 @@ PROCESS_STEP_COLORS = {
     "XRF Analysis": "#00B4D8",
 }
 BATCH_COLOR_SEQUENCE = [
-    "#95D5B2",
     "#5BC0BE",
     "#F9C74F",
     "#F95738",
@@ -1344,6 +1343,7 @@ BATCH_COLOR_SEQUENCE = [
     "#FFB703",
     "#00B4D8",
     "#EAEAEA",
+    "#95D5B2",
     "#78C850",
 ]
 
