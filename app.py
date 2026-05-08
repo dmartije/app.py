@@ -76,9 +76,9 @@ st.markdown(
     .kmi-logo {
         border-radius: 10px;
         flex: 0 0 auto;
-        height: 96px;
+        height: 99px;
         object-fit: contain;
-        width: 96px;
+        width: 99px;
     }
     .kmi-header-text {
         min-width: 0;
