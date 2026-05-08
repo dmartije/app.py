@@ -1363,7 +1363,7 @@ def apply_kmi_chart_theme(fig, legend_title_text, row_count=None):
         plot_bgcolor=CHART_PLOT_COLOR,
         font=dict(color=CHART_TEXT_COLOR, family="Inter, sans-serif", size=13),
         hovermode="closest",
-        bargap=0.24
+        bargap=0.24,
         legend_title_text=legend_title_text,
         legend=dict(
             bgcolor="rgba(8, 28, 21, 0.90)",
