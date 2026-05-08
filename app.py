@@ -717,9 +717,9 @@ if st.session_state.batches:
     with apply_col:
         apply_clicked = st.button("Apply Batch Edits/Deletes", use_container_width=True)
     with fifo_col:
-        fifo_clicked = st.button("FIFO Sublot Priority Button", use_container_width=True)
+        fifo_clicked = st.button("FIFO Sublot Priority Solver", use_container_width=True)
     with soft_col:
-        soft_clicked = st.button("Soft Priority Solver Button", use_container_width=True)
+        soft_clicked = st.button("Soft Priority Solver", use_container_width=True)
 
     if apply_clicked:
         remove_mask = edited["Remove"].fillna(False).astype(bool)
