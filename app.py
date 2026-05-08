@@ -202,6 +202,46 @@ st.markdown(
         accent-color: #2D6A4F;
         margin: auto;
     }
+
+    .lab-html-table-card {
+        background-color: #F7F9F3;
+        border: 1px solid #A6B99A;
+        border-radius: 14px;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+        overflow: hidden;
+        width: 100%;
+    }
+    .lab-html-table-card table {
+        border-collapse: collapse;
+        table-layout: fixed;
+        width: 100%;
+    }
+    .lab-html-table-card th {
+        background-color: #1F3B2D;
+        border-bottom: 2px solid #6B8E5A;
+        color: #FFFFFF;
+        font-size: 0.78rem;
+        font-weight: 700;
+        line-height: 1.18;
+        padding: 8px 6px;
+        text-align: left;
+        white-space: normal;
+        word-break: normal;
+        overflow-wrap: anywhere;
+    }
+    .lab-html-table-card td {
+        border-bottom: 1px solid #D7E0D1;
+        color: #17251D;
+        font-size: 0.78rem;
+        line-height: 1.25;
+        padding: 8px 6px;
+        vertical-align: top;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+    .lab-html-table-card tbody tr:nth-child(odd) td { background-color: #F7F9F3; }
+    .lab-html-table-card tbody tr:nth-child(even) td { background-color: #EEF3E8; }
+    .lab-html-table-card tbody tr:hover td { background-color: #E5EEDC; }
     .stAlert { background: #1B4332 !important; border: 1px solid #95D5B2 !important; color: #E9F5EF !important; }
     </style>
     """,
@@ -374,6 +414,45 @@ def lab_table_card(title, dataframe, caption=None, height="content", column_conf
             use_container_width=True,
             height=height,
             column_config=column_config,
+        )
+
+
+def lab_html_table_card(title, dataframe, caption=None):
+    """Render a fixed-width HTML table with wrapping headers to avoid horizontal scrolling."""
+    with st.container(border=True):
+        lab_section_title(title)
+        if caption:
+            st.markdown(f'<div class="lab-table-caption">{html.escape(caption)}</div>', unsafe_allow_html=True)
+
+        numeric_cols = dataframe.select_dtypes(include="number").columns.tolist()
+        datetime_cols = dataframe.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns.tolist()
+
+        def format_cell(column, value):
+            if pd.isna(value):
+                return ""
+            if column in datetime_cols:
+                return pd.Timestamp(value).strftime("%Y-%m-%d %I:%M %p")
+            if column in numeric_cols:
+                rounded = round(float(value), 2)
+                if math.isclose(rounded, round(rounded)):
+                    return f"{rounded:,.0f}"
+                return f"{rounded:,.2f}".rstrip("0").rstrip(".")
+            return str(value)
+
+        header_html = "".join(f"<th>{html.escape(str(col))}</th>" for col in dataframe.columns)
+        row_html = []
+        for _, row in dataframe.iterrows():
+            cells = "".join(
+                f"<td>{html.escape(format_cell(col, row[col]))}</td>" for col in dataframe.columns
+            )
+            row_html.append(f"<tr>{cells}</tr>")
+
+        st.markdown(
+            '<div class="lab-html-table-card"><table>'
+            f"<thead><tr>{header_html}</tr></thead>"
+            f"<tbody>{''.join(row_html)}</tbody>"
+            "</table></div>",
+            unsafe_allow_html=True,
         )
 
 
@@ -1217,12 +1296,19 @@ if st.session_state.batches:
                     "QC Rule": QC_RULES[batch["sample_type"]]["description"],
                 }
             )
+        qc_counts_df = pd.DataFrame(qc_display_rows)
+        qc_counts_display_df = qc_counts_df.rename(
+            columns={
+                "QC Added Samples": "QC Twin Sample",
+                "Analytical Additional Counts": "QC Pellet Sample",
+            }
+        )
         lab_table_card(
             "QC Adjusted Sample Counts",
-            pd.DataFrame(qc_display_rows),
+            qc_counts_display_df,
             caption=(
                 "Original Samples are the user-entered received samples only. "
-                "QC Added Samples begin at Drying. Analytical Additional Counts begin at Weighing. "
+                "QC Twin Sample begins at Drying. QC Pellet Sample begins at Weighing. "
                 "Final XRF Count drives weighing, pelletizing, and XRF batching."
             ),
             column_config={
@@ -1230,13 +1316,13 @@ if st.session_state.batches:
                     "Original Samples",
                     help="Original Samples: actual received samples entered by the user; QC is not included.",
                 ),
-                "QC Added Samples": st.column_config.NumberColumn(
-                    "QC Added Samples",
-                    help="QC Added Samples: system-generated QC samples added from the Drying step onward.",
+                "QC Twin Sample": st.column_config.NumberColumn(
+                    "QC Twin Sample",
+                    help="QC Twin Sample: system-generated QC samples added from the Drying step onward.",
                 ),
-                "Analytical Additional Counts": st.column_config.NumberColumn(
-                    "Analytical Additional Counts",
-                    help="Analytical Additional Counts: extra analyses/pellets added only from Weighing onward.",
+                "QC Pellet Sample": st.column_config.NumberColumn(
+                    "QC Pellet Sample",
+                    help="QC Pellet Sample: extra analyses/pellets added only from Weighing onward.",
                 ),
                 "Final XRF Count": st.column_config.NumberColumn(
                     "Final XRF Count",
@@ -1289,24 +1375,7 @@ if st.session_state.batches:
         ).round(2)
         statuses = batch_status_at_time(overall_df, ph_now)
         finals["Status"] = finals["Batch"].map(statuses).fillna("Waiting to Start")
-        count_cols = [
-            "Batch",
-            "Original Samples",
-            "QC Added Samples",
-            "Analytical Additional Counts",
-            "Adjusted After Reduction",
-            "Final XRF Count",
-        ]
-        finals = finals.merge(pd.DataFrame(qc_display_rows)[count_cols], on="Batch", how="left")
-        lab_table_card(
-            table_section_title,
-            finals,
-            column_config={
-                "_index": st.column_config.Column(pinned=True),
-                "Batch": st.column_config.Column("Batch", pinned=True),
-                "Type": st.column_config.Column("Type", pinned=True),
-            },
-        )
+        lab_html_table_card(table_section_title, finals)
 
         process_specs_title = "Process Time Specifications"
         spec_rows = [
