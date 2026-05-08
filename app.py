@@ -417,43 +417,47 @@ def lab_table_card(title, dataframe, caption=None, height="content", column_conf
         )
 
 
+def render_lab_html_table(dataframe):
+    """Render fixed-width table markup with wrapped headers and consistent cell formatting."""
+    numeric_cols = dataframe.select_dtypes(include="number").columns.tolist()
+    datetime_cols = dataframe.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns.tolist()
+
+    def format_cell(column, value):
+        if pd.isna(value):
+            return ""
+        if column in datetime_cols:
+            return pd.Timestamp(value).strftime("%Y-%m-%d %I:%M %p")
+        if column in numeric_cols:
+            rounded = round(float(value), 2)
+            if math.isclose(rounded, round(rounded)):
+                return f"{rounded:,.0f}"
+            return f"{rounded:,.2f}".rstrip("0").rstrip(".")
+        return str(value)
+
+    header_html = "".join(f"<th>{html.escape(str(col))}</th>" for col in dataframe.columns)
+    row_html = []
+    for _, row in dataframe.iterrows():
+        cells = "".join(
+            f"<td>{html.escape(format_cell(col, row[col]))}</td>" for col in dataframe.columns
+        )
+        row_html.append(f"<tr>{cells}</tr>")
+
+    st.markdown(
+        '<div class="lab-html-table-card"><table>'
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{''.join(row_html)}</tbody>"
+        "</table></div>",
+        unsafe_allow_html=True,
+    )
+
+
 def lab_html_table_card(title, dataframe, caption=None):
     """Render a fixed-width HTML table with wrapping headers to avoid horizontal scrolling."""
     with st.container(border=True):
         lab_section_title(title)
         if caption:
             st.markdown(f'<div class="lab-table-caption">{html.escape(caption)}</div>', unsafe_allow_html=True)
-
-        numeric_cols = dataframe.select_dtypes(include="number").columns.tolist()
-        datetime_cols = dataframe.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns.tolist()
-
-        def format_cell(column, value):
-            if pd.isna(value):
-                return ""
-            if column in datetime_cols:
-                return pd.Timestamp(value).strftime("%Y-%m-%d %I:%M %p")
-            if column in numeric_cols:
-                rounded = round(float(value), 2)
-                if math.isclose(rounded, round(rounded)):
-                    return f"{rounded:,.0f}"
-                return f"{rounded:,.2f}".rstrip("0").rstrip(".")
-            return str(value)
-
-        header_html = "".join(f"<th>{html.escape(str(col))}</th>" for col in dataframe.columns)
-        row_html = []
-        for _, row in dataframe.iterrows():
-            cells = "".join(
-                f"<td>{html.escape(format_cell(col, row[col]))}</td>" for col in dataframe.columns
-            )
-            row_html.append(f"<tr>{cells}</tr>")
-
-        st.markdown(
-            '<div class="lab-html-table-card"><table>'
-            f"<thead><tr>{header_html}</tr></thead>"
-            f"<tbody>{''.join(row_html)}</tbody>"
-            "</table></div>",
-            unsafe_allow_html=True,
-        )
+        render_lab_html_table(dataframe)
 
 
 def lab_editor_card(title, dataframe, **editor_kwargs):
@@ -679,19 +683,36 @@ if add_clicked and new_batch_id.strip():
 
 if st.session_state.batches:
     edit_df = pd.DataFrame(st.session_state.batches)
-    edit_df["Remove"] = False
-    edited = lab_editor_card(
-        "Batch List Table",
-        edit_df,
-        num_rows="dynamic",
-        column_config={
-            "Remove": st.column_config.CheckboxColumn(
-                "Remove",
-                help="Select rows to remove when applying edits.",
-                default=False,
-            )
-        },
+    batch_list_display_df = edit_df.rename(
+        columns={
+            "batch_id": "Batch",
+            "sample_type": "Type",
+            "qty": "Original Samples Received",
+            "material": "Material",
+            "received_at": "Date and Time Received",
+        }
     )
+    lab_html_table_card("Batch List Table", batch_list_display_df)
+
+    edit_df["Remove"] = False
+    with st.expander("Edit Batch List Table", expanded=False):
+        edited = st.data_editor(
+            style_lab_table(edit_df),
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "batch_id": st.column_config.TextColumn("Batch"),
+                "sample_type": st.column_config.TextColumn("Type"),
+                "qty": st.column_config.NumberColumn("Original Samples Received"),
+                "material": st.column_config.TextColumn("Material"),
+                "received_at": st.column_config.DatetimeColumn("Date and Time Received"),
+                "Remove": st.column_config.CheckboxColumn(
+                    "Remove",
+                    help="Select rows to remove when applying edits.",
+                    default=False,
+                ),
+            },
+        )
     apply_col, fifo_col, soft_col = st.columns(3)
     with apply_col:
         apply_clicked = st.button("Apply Batch Edits/Deletes", use_container_width=True)
@@ -1303,7 +1324,7 @@ if st.session_state.batches:
                 "Analytical Additional Counts": "QC Pellet Sample",
             }
         )
-        lab_table_card(
+        lab_html_table_card(
             "QC Adjusted Sample Counts",
             qc_counts_display_df,
             caption=(
@@ -1311,24 +1332,6 @@ if st.session_state.batches:
                 "QC Twin Sample begins at Drying. QC Pellet Sample begins at Weighing. "
                 "Final XRF Count drives weighing, pelletizing, and XRF batching."
             ),
-            column_config={
-                "Original Samples": st.column_config.NumberColumn(
-                    "Original Samples",
-                    help="Original Samples: actual received samples entered by the user; QC is not included.",
-                ),
-                "QC Twin Sample": st.column_config.NumberColumn(
-                    "QC Twin Sample",
-                    help="QC Twin Sample: system-generated QC samples added from the Drying step onward.",
-                ),
-                "QC Pellet Sample": st.column_config.NumberColumn(
-                    "QC Pellet Sample",
-                    help="QC Pellet Sample: extra analyses/pellets added only from Weighing onward.",
-                ),
-                "Final XRF Count": st.column_config.NumberColumn(
-                    "Final XRF Count",
-                    help="Final XRF Count: total analyses that drive Weighing, Pelletizing, and XRF batching.",
-                ),
-            },
         )
         
         table_section_title = "Batch Completion Summary"
@@ -1490,7 +1493,7 @@ if st.session_state.batches:
                 "Notes": f"Uses Final XRF Count; 30 min per 10-sample run or partial run; parallel across {xrf_machine_count} XRF machine(s).",
             },
         ]
-        lab_table_card(process_specs_title, pd.DataFrame(spec_rows))
+        lab_html_table_card(process_specs_title, pd.DataFrame(spec_rows))
 
         step_summary_title = "Summary per Processing Step (per Batch)"
         step_order = [
@@ -1554,22 +1557,18 @@ if st.session_state.batches:
                     filtered_step_summary["Step"].astype(str) == selected_step
                 ]
 
-            st.dataframe(
-                style_lab_table(
-                    filtered_step_summary[[
-                        "Batch Label",
-                        "Step",
-                        "Start",
-                        "Finish",
-                        "Duration (Min/Hr)",
-                        "Original Samples",
-                        "QC Added Samples",
-                        "Analytical Additional Counts",
-                        "Adjusted Processing Count",
-                    ]]
-                ),
-                use_container_width=True,
-                height="content",
+            render_lab_html_table(
+                filtered_step_summary[[
+                    "Batch Label",
+                    "Step",
+                    "Start",
+                    "Finish",
+                    "Duration (Min/Hr)",
+                    "Original Samples",
+                    "QC Added Samples",
+                    "Analytical Additional Counts",
+                    "Adjusted Processing Count",
+                ]]
             )
 
         lab_section_title("Overall Sample Prep and Laboratory Process Chart")
