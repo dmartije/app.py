@@ -1907,7 +1907,7 @@ if st.session_state.batches:
                     "Final XRF Count",
                 ],
             )
-           show_legend_on_right(fig_xrf, "Batch", row_count=active_xrf_df["Machine"].nunique())
+            show_legend_on_right(fig_xrf, "Batch", row_count=active_xrf_df["Machine"].nunique())
             fig_xrf.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_xrf, use_container_width=True)
 
