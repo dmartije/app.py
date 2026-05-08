@@ -1104,31 +1104,60 @@ def schedule_batches(batches):
         )
     pellet_df = pd.DataFrame(pellet_rows)
 
-    xrf_rows = []
-    xrf_free = {f"XRF {i}": pd.Timestamp.min for i in range(1, int(xrf_machine_count) + 1)}
-    for batch_id, grp in pellet_df.groupby("Batch"):
+    xrf_tasks = []
+    for batch_id, grp in pellet_df.groupby("Batch", sort=False):
         grp = grp.sort_values("Finish")
         sample_finishes = list(grp["Finish"])
         batch_type = grp["Type"].iloc[0]
         for chunk_idx in range(0, len(sample_finishes), 10):
             chunk_samples = min(10, len(sample_finishes) - chunk_idx)
-            ready_t = sample_finishes[chunk_idx + chunk_samples - 1]
-            machine = min(xrf_free, key=lambda m: max(xrf_free[m], ready_t))
-            x_start = max(xrf_free[machine], ready_t)
-            x_finish = x_start + timedelta(minutes=30)
-            xrf_free[machine] = x_finish
-            xrf_rows.append(
+            xrf_tasks.append(
                 {
                     "Batch": batch_id,
                     "Type": batch_type,
                     "Chunk": f"{chunk_idx + 1}-{chunk_idx + chunk_samples}",
                     "Samples": chunk_samples,
                     **step_count_metadata(batch_type, int(batch_lookup[batch_id]["qty"]), "XRF Analysis"),
-                    "Machine": machine,
-                    "Start": x_start,
-                    "Finish": x_finish,
+                    "ready": sample_finishes[chunk_idx + chunk_samples - 1],
                 }
             )
+    
+    xrf_rows = []
+    xrf_free = {f"XRF {i}": pd.Timestamp.min for i in range(1, int(xrf_machine_count) + 1)}
+
+    def xrf_task_priority(t):
+        return (0 if t["Type"] == "Sublot" else 1, t["ready"], t["Batch"], t["Chunk"])
+
+    pending_xrf = xrf_tasks[:]
+    while pending_xrf:
+        machine = min(xrf_free, key=lambda m: xrf_free[m])
+        current_t = xrf_free[machine]
+        ready = [t for t in pending_xrf if t["ready"] <= current_t]
+        if not ready:
+            next_ready = min(t["ready"] for t in pending_xrf)
+            current_t = max(current_t, next_ready)
+            ready = [t for t in pending_xrf if t["ready"] <= current_t]
+        chosen = sorted(ready, key=xrf_task_priority)[0]
+        x_start = current_t
+        x_finish = x_start + timedelta(minutes=30)
+        xrf_free[machine] = x_finish
+        pending_xrf.remove(chosen)
+        xrf_rows.append(
+            {
+                "Batch": chosen["Batch"],
+                "Type": chosen["Type"],
+                "Chunk": chosen["Chunk"],
+                "Samples": chosen["Samples"],
+                "Machine": machine,
+                "Start": x_start,
+                "Finish": x_finish,
+                **{
+                    key: value
+                    for key, value in chosen.items()
+                    if key not in {"Batch", "Type", "Chunk", "Samples", "ready"}
+                },
+            }
+        )
     xrf_df = pd.DataFrame(xrf_rows)
 
     for bid in overall_df["Batch"].unique():
