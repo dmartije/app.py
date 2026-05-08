@@ -1309,14 +1309,95 @@ def batch_status_at_time(overall_df, ts):
     return result
 
 
-def show_legend_on_right(fig, title_text):
-    """Keep color legends visible on the right side of timeline charts."""
+CHART_PAPER_COLOR = "#102E24"
+CHART_PLOT_COLOR = "#0D261F"
+CHART_GRID_COLOR = "#355E48"
+CHART_TEXT_COLOR = "#E9F5EF"
+CHART_MUTED_TEXT_COLOR = "#CFE0C5"
+CHART_ACCENT_COLOR = "#95B46A"
+PROCESS_STEP_COLORS = {
+    "Sorting": "#8FB996",
+    "Pre-Drying": "#A8C686",
+    "Reduction": "#D6B85A",
+    "Drying": "#C98D45",
+    "Crushing": "#74A57F",
+    "Pulverizing & Sieving": "#6A994E",
+    "Laboratory Sorting": "#B7C77A",
+    "Laboratory Drying": "#DDA15E",
+    "Cooling in Desiccator": "#86A873",
+    "Weighing": "#CBD5C0",
+    "Pelletizing": "#E9C46A",
+    "XRF Analysis": "#52A675",
+}
+BATCH_COLOR_SEQUENCE = [
+    "#A7C957",
+    "#6A994E",
+    "#386641",
+    "#DDA15E",
+    "#BC6C25",
+    "#D4A373",
+    "#7F9172",
+    "#588157",
+    "#C2C5AA",
+    "#A98467",
+    "#8FB996",
+    "#E9C46A",
+]
+
+
+def apply_kmi_chart_theme(fig, legend_title_text):
+    """Apply the army-green KMI dashboard palette to Plotly timeline charts."""
     fig.update_layout(
-        legend_title_text=title_text,
-        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
-        margin=dict(r=160),
+        paper_bgcolor=CHART_PAPER_COLOR,
+        plot_bgcolor=CHART_PLOT_COLOR,
+        font=dict(color=CHART_TEXT_COLOR, family="Inter, sans-serif", size=13),
+        legend_title_text=legend_title_text,
+        legend=dict(
+            bgcolor="rgba(13, 38, 31, 0.92)",
+            bordercolor=CHART_ACCENT_COLOR,
+            borderwidth=1,
+            font=dict(color=CHART_TEXT_COLOR),
+            orientation="v",
+            title_font=dict(color=CHART_TEXT_COLOR),
+            x=1.02,
+            xanchor="left",
+            y=1,
+            yanchor="top",
+        ),
+        margin=dict(l=20, r=180, t=28, b=58),
+        hoverlabel=dict(
+            bgcolor="#F7F9F3",
+            bordercolor=CHART_ACCENT_COLOR,
+            font=dict(color="#17251D", family="Inter, sans-serif"),
+        ),
     )
+    fig.update_xaxes(
+        color=CHART_MUTED_TEXT_COLOR,
+        gridcolor=CHART_GRID_COLOR,
+        linecolor=CHART_ACCENT_COLOR,
+        mirror=True,
+        showgrid=True,
+        tickfont=dict(color=CHART_MUTED_TEXT_COLOR),
+        title_font=dict(color=CHART_TEXT_COLOR),
+        zeroline=False,
+    )
+    fig.update_yaxes(
+        color=CHART_MUTED_TEXT_COLOR,
+        gridcolor="rgba(53, 94, 72, 0.35)",
+        linecolor=CHART_ACCENT_COLOR,
+        mirror=True,
+        showgrid=False,
+        tickfont=dict(color=CHART_MUTED_TEXT_COLOR),
+        title_font=dict(color=CHART_TEXT_COLOR),
+        zeroline=False,
+    )
+    fig.update_traces(marker_line_color="#0B2E26", marker_line_width=0.75, opacity=0.96)
     return fig
+
+
+def show_legend_on_right(fig, title_text):
+    """Keep color legends visible on the right side of themed timeline charts."""
+    return apply_kmi_chart_theme(fig, title_text)
 
 if st.session_state.batches:
     if st.session_state.schedule_mode == "soft":
@@ -1617,6 +1698,7 @@ if st.session_state.batches:
                 y="Label",
                 color="Step",
                 category_orders={"Step": step_order},
+                color_discrete_map=PROCESS_STEP_COLORS,
                 hover_data=[
                     "Original Samples",
                     "QC Added Samples",
@@ -1641,6 +1723,7 @@ if st.session_state.batches:
                 x_end="Reduction Finish",
                 y="Plate",
                 color="Batch",
+                color_discrete_sequence=BATCH_COLOR_SEQUENCE,
                 hover_data=["Original Samples", "QC Added Samples", "Adjusted Processing Count"],
             )
             show_legend_on_right(fig_plate, "Batch")
@@ -1675,6 +1758,7 @@ if st.session_state.batches:
                 x_end="Finish",
                 y="Slot",
                 color="Batch",
+                color_discrete_sequence=BATCH_COLOR_SEQUENCE,                
                 hover_data=[
                     "Original Samples",
                     "QC Added Samples",
@@ -1698,6 +1782,7 @@ if st.session_state.batches:
                 x_end="Finish",
                 y="Lane",
                 color="Batch",
+                color_discrete_sequence=BATCH_COLOR_SEQUENCE,                
                 hover_data=["Original Samples", "QC Added Samples", "Adjusted Processing Count"],
             )
             show_legend_on_right(fig_cr, "Batch")
@@ -1715,6 +1800,7 @@ if st.session_state.batches:
                 x_end="Finish",
                 y="Machine",
                 color="Batch",
+                color_discrete_sequence=BATCH_COLOR_SEQUENCE,                
                 hover_data=["Original Samples", "QC Added Samples", "Adjusted Processing Count"],
             )
             show_legend_on_right(fig_p, "Batch")
@@ -1732,6 +1818,7 @@ if st.session_state.batches:
                 x_end="Finish",
                 y="Balance",
                 color="Batch",
+                color_discrete_sequence=BATCH_COLOR_SEQUENCE,                
                 hover_data=[
                     "Original Samples",
                     "QC Added Samples",
@@ -1754,6 +1841,7 @@ if st.session_state.batches:
                 x_end="Finish",
                 y="Machine",
                 color="Batch",
+                color_discrete_sequence=BATCH_COLOR_SEQUENCE,                
                 hover_data=[
                     "Original Samples",
                     "QC Added Samples",
@@ -1776,6 +1864,7 @@ if st.session_state.batches:
                 x_end="Finish",
                 y="Machine",
                 color="Batch",
+                color_discrete_sequence=BATCH_COLOR_SEQUENCE,                
                 hover_data=[
                     "Samples",
                     "Original Samples",
