@@ -13,7 +13,7 @@ import plotly.express as px
 import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
-LOGO_PATH = APP_DIR / ".devcontainer" / "viber_image_2024-02-27_14-50-04-299.jpg"
+LOGO_PATH = APP_DIR / ".devcontainer" / "viber_image_2024-02-27_14-50-04-299-removebg-preview (1).png"
 SIDEBAR_LOGO_PATH = APP_DIR / ".devcontainer" / "KMI Logo.jpg"
 
 st.set_page_config(page_title="Sample Workflow Optimizer", layout="wide")
@@ -212,7 +212,7 @@ if LOGO_PATH.exists():
     encoded_logo = base64.b64encode(LOGO_PATH.read_bytes()).decode("utf-8")
     logo_html = (
         '<img class="kmi-logo" '
-        'src="data:image/jpeg;base64,' + encoded_logo + '" '
+        'src="data:image/png;base64,' + encoded_logo + '" '
         'alt="Kafugan Mining Incorporated logo">'
     )
 
