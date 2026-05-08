@@ -441,6 +441,72 @@ rules = {
 }
 
 
+
+# Modular QC expansion rules. User-entered quantities remain original received samples;
+# these helpers derive the adjusted processing counts used from drying onward.
+QC_RULES = {
+    "Face": {
+        "description": "1 QC sample for every 15 original samples from drying onward.",
+        "qc_added": lambda original: math.ceil(original / 15),
+        "analytical_additional": lambda original: 0,
+    },
+    "Mine": {
+        "description": "1 QC sample per original mine sample from drying onward.",
+        "qc_added": lambda original: original,
+        "analytical_additional": lambda original: 0,
+    },
+    "Sublot": {
+        "description": "1 QC sample per original sublot from drying onward, plus 2 additional analyses per original from weighing onward.",
+        "qc_added": lambda original: original,
+        "analytical_additional": lambda original: original * 2,
+    },
+    "Lot Quality": {
+        "description": "1 QC sample per original lot quality sample from drying onward, plus 8 additional analyses per original from weighing onward.",
+        "qc_added": lambda original: original,
+        "analytical_additional": lambda original: original * 8,
+    },
+}
+
+ORIGINAL_ONLY_STEPS = {"Sorting", "Pre-Drying", "Reduction"}
+ANALYTICAL_STEPS = {"Weighing", "Pelletizing", "XRF Analysis"}
+
+
+def qc_count_breakdown(sample_type, original_qty):
+    """Return original, QC, and final analytical counts for a batch."""
+    original_qty = max(0, int(original_qty))
+    rule = QC_RULES[sample_type]
+    qc_added = int(rule["qc_added"](original_qty))
+    analytical_additional = int(rule["analytical_additional"](original_qty))
+    adjusted_after_reduction = original_qty + qc_added
+    final_xrf_count = adjusted_after_reduction + analytical_additional
+    return {
+        "Original Samples": original_qty,
+        "QC Added Samples": qc_added,
+        "Analytical Additional Counts": analytical_additional,
+        "Adjusted After Reduction": adjusted_after_reduction,
+        "Final XRF Count": final_xrf_count,
+    }
+
+
+def adjusted_count_for_step(sample_type, original_qty, step):
+    """Return the processing count that should drive duration/resource use for a step."""
+    counts = qc_count_breakdown(sample_type, original_qty)
+    if step in ORIGINAL_ONLY_STEPS:
+        return counts["Original Samples"]
+    if step in ANALYTICAL_STEPS:
+        return counts["Final XRF Count"]
+    return counts["Adjusted After Reduction"]
+
+
+def step_count_metadata(sample_type, original_qty, step):
+    """Build reusable count-display metadata for schedule rows and tooltips."""
+    counts = qc_count_breakdown(sample_type, original_qty)
+    adjusted_processing_count = adjusted_count_for_step(sample_type, original_qty, step)
+    return {
+        **counts,
+        "Adjusted Processing Count": adjusted_processing_count,
+    }
+
 def per_sample_minutes(step, sample_type, material):
     material = (material or "").strip().lower()
     matrix = {
@@ -495,7 +561,13 @@ with st.sidebar.form("add_batch_form", clear_on_submit=True):
     new_batch_id = st.text_input("Batch Number / Sample ID", value="")
     new_type = st.selectbox("Sample Type", list(rules.keys()))
     new_material = st.selectbox("Material", ["Limonite", "Saprolite"], index=0)
-    new_qty = st.number_input("Number of Samples", min_value=1, max_value=10000, value=1)
+    new_qty = st.number_input(
+        "Original Samples Received",
+        min_value=1,
+        max_value=10000,
+        value=1,
+        help="Enter only the actual received samples. QC and analytical additions are calculated automatically.",
+    )
     new_received = st.datetime_input("Date and Time Received", value=ph_now.to_pydatetime())
     add_clicked = st.form_submit_button("Add Batch")
 
@@ -617,6 +689,8 @@ def schedule_batches(batches):
         r = rules[b["sample_type"]]
         bid = b["batch_id"]
         qty = int(b["qty"])
+        counts = qc_count_breakdown(b["sample_type"], qty)
+        dry_qty = counts["Adjusted After Reduction"]
         material = b.get("material", "N/A")
         recv = pd.Timestamp(b["received_at"])
 
@@ -648,7 +722,16 @@ def schedule_batches(batches):
             pre_finish = pre_start + pre_duration
             oven_jobs.append({"start": pre_start, "finish": pre_finish, "slots": pre_slots})
             drying_rows.append(
-                {"Batch": bid, "Type": b["sample_type"], "Qty": qty, "Step": "Pre-Drying", "Start": pre_start, "Finish": pre_finish, "Slots": pre_slots}
+                {
+                    "Batch": bid,
+                    "Type": b["sample_type"],
+                    "Qty": qty,
+                    "Step": "Pre-Drying",
+                    "Start": pre_start,
+                    "Finish": pre_finish,
+                    "Slots": pre_slots,
+                    **step_count_metadata(b["sample_type"], qty, "Pre-Drying"),
+                }
             )
             red_start = pre_finish
 
@@ -679,6 +762,7 @@ def schedule_batches(batches):
                 "Batch": bid,
                 "Type": b["sample_type"],
                 "Qty": qty,
+                **step_count_metadata(b["sample_type"], qty, "Reduction"),
                 "Sorting Start": sorting_start,
                 "Sorting End": sorting_end,
                 "Reduction Start": red_start,
@@ -691,7 +775,7 @@ def schedule_batches(batches):
 
         # Find shelf slots where entire drying duration can fit.
         dry_start = red_finish
-        shelves_need = math.ceil(qty / r["drying_per_shelf"])
+        shelves_need = math.ceil(dry_qty / r["drying_per_shelf"])
         duration = timedelta(minutes=r["drying_minutes"])
         assigned_slots = []
 
@@ -721,7 +805,8 @@ def schedule_batches(batches):
             {
                 "Batch": bid,
                 "Type": b["sample_type"],
-                "Qty": qty,
+                "Qty": dry_qty,
+                **step_count_metadata(b["sample_type"], qty, "Drying"),
                 "Start": dry_start,
                 "Finish": dry_finish,
                 "Step": "Drying",
@@ -735,7 +820,7 @@ def schedule_batches(batches):
             crush_start += timedelta(minutes=TIME_UNIT)
 
         crush_personnel = max(1, personnel_total - active_crushing_personnel(crush_start))
-        crush_cycles = math.ceil(qty / crush_personnel)
+        crush_cycles = math.ceil(dry_qty / crush_personnel)
         crush_per_sample = per_sample_minutes("crushing", b["sample_type"], material)
         crush_minutes = crush_cycles * crush_per_sample
         crush_finish = crush_start + timedelta(minutes=crush_minutes)
@@ -745,7 +830,8 @@ def schedule_batches(batches):
             {
                 "Batch": bid,
                 "Type": b["sample_type"],
-                "Qty": qty,
+                "Qty": dry_qty,
+                **step_count_metadata(b["sample_type"], qty, "Crushing"),
                 "Start": crush_start,
                 "Finish": crush_finish,
                 "Personnel": crush_personnel,
@@ -754,8 +840,8 @@ def schedule_batches(batches):
 
         # Split quantity across pulverizers, preferring the earliest-available machine.
         machines = sorted(list(pulv_free.keys()), key=lambda m: pulv_free[m])
-        q_base = qty // len(machines)
-        q_rem = qty % len(machines)
+        q_base = dry_qty // len(machines)
+        q_rem = dry_qty % len(machines)
 
         for i, m in enumerate(machines):
             q_m = q_base + (1 if i < q_rem else 0)
@@ -771,7 +857,7 @@ def schedule_batches(batches):
                     "Batch": bid,
                     "Type": b["sample_type"],
                     "Qty": q_m,
-                    "Machine": m,
+                    **step_count_metadata(b["sample_type"], qty, "Pulverizing & Sieving"),
                     "Start": p_start,
                     "Finish": p_finish,
                 }
@@ -784,24 +870,26 @@ def schedule_batches(batches):
 
     # Build a consolidated step-level view (used by summary tables and Gantt charts).
     overall_rows = []
+    batch_lookup = {b["batch_id"]: b for b in batches}
+
+    def overall_row(bid, sample_type, step, start, finish):
+        original_qty = int(batch_lookup[bid]["qty"])
+        return {
+            "Batch": bid,
+            "Type": sample_type,
+            "Step": step,
+            "Start": start,
+            "Finish": finish,
+            **step_count_metadata(sample_type, original_qty, step),
+        }
+
+    overall_rows = []
     for bid in red_df["Batch"].unique():
         rt = red_df[red_df["Batch"] == bid].iloc[0]
         overall_rows.extend(
             [
-                {
-                    "Batch": bid,
-                    "Type": rt["Type"],
-                    "Step": "Sorting",
-                    "Start": rt["Sorting Start"],
-                    "Finish": rt["Sorting End"],
-                },
-                {
-                    "Batch": bid,
-                    "Type": rt["Type"],
-                    "Step": "Reduction",
-                    "Start": rt["Reduction Start"],
-                    "Finish": rt["Reduction Finish"],
-                },
+                overall_row(bid, rt["Type"], "Sorting", rt["Sorting Start"], rt["Sorting End"]),
+                overall_row(bid, rt["Type"], "Reduction", rt["Reduction Start"], rt["Reduction Finish"]),
             ]
         )
 
@@ -813,39 +901,21 @@ def schedule_batches(batches):
             pre = d[d["Step"] == "Pre-Drying"]
             if not pre.empty:
                 overall_rows.append(
-                    {"Batch": bid, "Type": rt["Type"], "Step": "Pre-Drying", "Start": pre["Start"].min(), "Finish": pre["Finish"].max()}
+                    overall_row(bid, rt["Type"], "Pre-Drying", pre["Start"].min(), pre["Finish"].max())
                 )
             d_final = d[d["Step"] == "Drying"]
             if not d_final.empty:
                 overall_rows.append(
-                    {
-                        "Batch": bid,
-                        "Type": rt["Type"],
-                        "Step": "Drying",
-                        "Start": d_final["Start"].min(),
-                        "Finish": d_final["Finish"].max(),
-                    }
+                    overall_row(bid, rt["Type"], "Drying", d_final["Start"].min(), d_final["Finish"].max())
                 )
         if not c.empty:
             overall_rows.append(
-                {
-                    "Batch": bid,
-                    "Type": rt["Type"],
-                    "Step": "Crushing",
-                    "Start": c["Start"].min(),
-                    "Finish": c["Finish"].max(),
-                }
+                overall_row(bid, rt["Type"], "Crushing", c["Start"].min(), c["Finish"].max())
             )
         if not p.empty:
             pulv_finish = p["Finish"].max()
             overall_rows.append(
-                {
-                    "Batch": bid,
-                    "Type": rt["Type"],
-                    "Step": "Pulverizing & Sieving",
-                    "Start": p["Start"].min(),
-                    "Finish": pulv_finish,
-                }
+                overall_row(bid, rt["Type"], "Pulverizing & Sieving", p["Start"].min(), pulv_finish)
             )
 
             lab_sort_start = pulv_finish
@@ -855,27 +925,9 @@ def schedule_batches(batches):
 
             overall_rows.extend(
                 [
-                    {
-                        "Batch": bid,
-                        "Type": rt["Type"],
-                        "Step": "Laboratory Sorting",
-                        "Start": lab_sort_start,
-                        "Finish": lab_sort_finish,
-                    },
-                    {
-                        "Batch": bid,
-                        "Type": rt["Type"],
-                        "Step": "Laboratory Drying",
-                        "Start": lab_sort_finish,
-                        "Finish": lab_dry_finish,
-                    },
-                    {
-                        "Batch": bid,
-                        "Type": rt["Type"],
-                        "Step": "Cooling in Desiccator",
-                        "Start": lab_dry_finish,
-                        "Finish": cool_finish,
-                    },
+                    overall_row(bid, rt["Type"], "Laboratory Sorting", lab_sort_start, lab_sort_finish),
+                    overall_row(bid, rt["Type"], "Laboratory Drying", lab_sort_finish, lab_dry_finish),
+                    overall_row(bid, rt["Type"], "Cooling in Desiccator", lab_dry_finish, cool_finish),
                 ]
             )
 
@@ -883,10 +935,10 @@ def schedule_batches(batches):
 
     # --- Weighing (2 balances, priority-aware), Pelletizing, XRF allocation ---
     cool_steps = overall_df[overall_df["Step"] == "Cooling in Desiccator"].copy()
-    batch_lookup = {b["batch_id"]: b for b in batches}
     weighing_tasks = []
     for _, row in cool_steps.iterrows():
-        qty = int(batch_lookup[row["Batch"]]["qty"])
+        original_qty = int(batch_lookup[row["Batch"]]["qty"])
+        qty = adjusted_count_for_step(row["Type"], original_qty, "Weighing")
         for sample_idx in range(1, qty + 1):
             weighing_tasks.append(
                 {
@@ -894,6 +946,7 @@ def schedule_batches(batches):
                     "Type": row["Type"],
                     "Sample": sample_idx,
                     "ready": row["Finish"],
+                    **step_count_metadata(row["Type"], original_qty, "Weighing"),
                 }
             )
 
@@ -923,6 +976,7 @@ def schedule_batches(batches):
                 "Type": chosen["Type"],
                 "Sample": chosen["Sample"],
                 "Balance": machine,
+                **step_count_metadata(chosen["Type"], int(batch_lookup[chosen["Batch"]]["qty"]), "Weighing"),
                 "Start": start_t,
                 "Finish": finish_t,
             }
@@ -941,6 +995,7 @@ def schedule_batches(batches):
                 "Batch": w["Batch"],
                 "Type": w["Type"],
                 "Sample": w["Sample"],
+                **step_count_metadata(w["Type"], int(batch_lookup[w["Batch"]]["qty"]), "Pelletizing"),
                 "Start": p_start,
                 "Finish": p_finish,
                 "Machine": "Pelletizer 1",
@@ -967,6 +1022,7 @@ def schedule_batches(batches):
                     "Type": batch_type,
                     "Chunk": f"{chunk_idx + 1}-{chunk_idx + chunk_samples}",
                     "Samples": chunk_samples,
+                    **step_count_metadata(batch_type, int(batch_lookup[batch_id]["qty"]), "XRF Analysis"),
                     "Machine": machine,
                     "Start": x_start,
                     "Finish": x_finish,
@@ -980,11 +1036,11 @@ def schedule_batches(batches):
         x = xrf_df[xrf_df["Batch"] == bid]
         batch_type = overall_df[overall_df["Batch"] == bid]["Type"].iloc[0]
         if not w.empty:
-            overall_df.loc[len(overall_df)] = [bid, batch_type, "Weighing", w["Start"].min(), w["Finish"].max()]
+            overall_df.loc[len(overall_df)] = overall_row(bid, batch_type, "Weighing", w["Start"].min(), w["Finish"].max())
         if not pel.empty:
-            overall_df.loc[len(overall_df)] = [bid, batch_type, "Pelletizing", pel["Start"].min(), pel["Finish"].max()]
+            overall_df.loc[len(overall_df)] = overall_row(bid, batch_type, "Pelletizing", pel["Start"].min(), pel["Finish"].max())
         if not x.empty:
-            overall_df.loc[len(overall_df)] = [bid, batch_type, "XRF Analysis", x["Start"].min(), x["Finish"].max()]
+            overall_df.loc[len(overall_df)] = overall_row(bid, batch_type, "XRF Analysis", x["Start"].min(), x["Finish"].max())
 
     return red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df
 
@@ -1148,6 +1204,47 @@ if st.session_state.batches:
         st.info(f"Schedule Mode: {schedule_mode_label} | Solver Status: {solver_status}")
         st.caption(solver_message)
 
+
+        qc_display_rows = []
+        for batch in best_order:
+            original_qty = int(batch["qty"])
+            counts = qc_count_breakdown(batch["sample_type"], original_qty)
+            qc_display_rows.append(
+                {
+                    "Batch": batch["batch_id"],
+                    "Type": batch["sample_type"],
+                    **counts,
+                    "QC Rule": QC_RULES[batch["sample_type"]]["description"],
+                }
+            )
+        lab_table_card(
+            "QC Adjusted Sample Counts",
+            pd.DataFrame(qc_display_rows),
+            caption=(
+                "Original Samples are the user-entered received samples only. "
+                "QC Added Samples begin at Drying. Analytical Additional Counts begin at Weighing. "
+                "Final XRF Count drives weighing, pelletizing, and XRF batching."
+            ),
+            column_config={
+                "Original Samples": st.column_config.NumberColumn(
+                    "Original Samples",
+                    help="Original Samples: actual received samples entered by the user; QC is not included.",
+                ),
+                "QC Added Samples": st.column_config.NumberColumn(
+                    "QC Added Samples",
+                    help="QC Added Samples: system-generated QC samples added from the Drying step onward.",
+                ),
+                "Analytical Additional Counts": st.column_config.NumberColumn(
+                    "Analytical Additional Counts",
+                    help="Analytical Additional Counts: extra analyses/pellets added only from Weighing onward.",
+                ),
+                "Final XRF Count": st.column_config.NumberColumn(
+                    "Final XRF Count",
+                    help="Final XRF Count: total analyses that drive Weighing, Pelletizing, and XRF batching.",
+                ),
+            },
+        )
+        
         table_section_title = "Batch Completion Summary"
         sample_prep_steps = ["Sorting", "Pre-Drying", "Reduction", "Drying", "Crushing", "Pulverizing & Sieving"]
         lab_steps = [
@@ -1192,6 +1289,15 @@ if st.session_state.batches:
         ).round(2)
         statuses = batch_status_at_time(overall_df, ph_now)
         finals["Status"] = finals["Batch"].map(statuses).fillna("Waiting to Start")
+        count_cols = [
+            "Batch",
+            "Original Samples",
+            "QC Added Samples",
+            "Analytical Additional Counts",
+            "Adjusted After Reduction",
+            "Final XRF Count",
+        ]
+        finals = finals.merge(pd.DataFrame(qc_display_rows)[count_cols], on="Batch", how="left")
         lab_table_card(
             table_section_title,
             finals,
@@ -1212,7 +1318,7 @@ if st.session_state.batches:
                 "Lot Quality": rules["Lot Quality"]["sorting_minutes"],
                 "Processing Basis": "Per Batch",
                 "Resource Used": "Personnel",
-                "Notes": "Fixed per batch by sample type.",
+                "Notes": "Fixed per batch by sample type; uses Original Samples only.",
             },
             {
                 "Process Step": "Reduction",
@@ -1222,7 +1328,7 @@ if st.session_state.batches:
                 "Lot Quality": rules["Lot Quality"]["reduction_minutes"],
                 "Processing Basis": "Per Batch",
                 "Resource Used": "Personnel / Plate",
-                "Notes": f"Personnel headcount constrained by user input ({personnel_total}).",
+                "Notes": f"Uses Original Samples only; personnel headcount constrained by user input ({personnel_total}).",
             },
             {
                 "Process Step": "Drying",
@@ -1232,7 +1338,7 @@ if st.session_state.batches:
                 "Lot Quality": rules["Lot Quality"]["drying_minutes"],
                 "Processing Basis": "Per Cycle",
                 "Resource Used": "Oven",
-                "Notes": f"Cycle time fixed; capacity varies by oven window ({ovens_high}/{ovens_low} ovens).",
+                "Notes": f"Uses adjusted count after QC additions; capacity varies by oven window ({ovens_high}/{ovens_low} ovens).",
             },
             {
                 "Process Step": "Crushing",
@@ -1242,7 +1348,7 @@ if st.session_state.batches:
                 "Lot Quality": rules["Lot Quality"]["crushing_per_sample"],
                 "Processing Basis": "Per Sample",
                 "Resource Used": "Personnel",
-                "Notes": f"Parallelized by available personnel ({personnel_total} max).",
+                "Notes": f"Uses adjusted count after QC additions; parallelized by available personnel ({personnel_total} max).",
             },
             {
                 "Process Step": "Pulverizing & Sieving",
@@ -1252,7 +1358,7 @@ if st.session_state.batches:
                 "Lot Quality": rules["Lot Quality"]["pulv_per_sample"],
                 "Processing Basis": "Per Sample",
                 "Resource Used": "Pulverizer",
-                "Notes": f"Distributed in parallel across {pulverizer_count} pulverizer(s).",
+                "Notes": f"Uses adjusted count after QC additions; distributed in parallel across {pulverizer_count} pulverizer(s).",
             },
             {
                 "Process Step": "Laboratory Sorting",
@@ -1292,7 +1398,7 @@ if st.session_state.batches:
                 "Lot Quality": 3,
                 "Processing Basis": "Per Sample",
                 "Resource Used": "Balance",
-                "Notes": "Two balances in parallel; Sublot prioritized when ready.",
+                "Notes": "Uses Final XRF Count after QC and analytical additions; two balances in parallel; Sublot prioritized when ready.",
             },
             {
                 "Process Step": "Pelletizing",
@@ -1302,7 +1408,7 @@ if st.session_state.batches:
                 "Lot Quality": 3,
                 "Processing Basis": "Per Sample",
                 "Resource Used": "Pelletizer",
-                "Notes": "Single pelletizer, serialized.",
+                "Notes": "Uses Final XRF Count after QC and analytical additions; single pelletizer, serialized.",
             },
             {
                 "Process Step": "XRF Analysis",
@@ -1312,7 +1418,7 @@ if st.session_state.batches:
                 "Lot Quality": 30,
                 "Processing Basis": "Per 10 Samples",
                 "Resource Used": "XRF Machine",
-                "Notes": f"30 min per 10-sample run; parallel across {xrf_machine_count} XRF machine(s).",
+                "Notes": f"Uses Final XRF Count; 30 min per 10-sample run or partial run; parallel across {xrf_machine_count} XRF machine(s).",
             },
         ]
         lab_table_card(process_specs_title, pd.DataFrame(spec_rows))
@@ -1387,6 +1493,10 @@ if st.session_state.batches:
                         "Start",
                         "Finish",
                         "Duration (Min/Hr)",
+                        "Original Samples",
+                        "QC Added Samples",
+                        "Analytical Additional Counts",
+                        "Adjusted Processing Count",
                     ]]
                 ),
                 use_container_width=True,
@@ -1409,6 +1519,13 @@ if st.session_state.batches:
                 y="Label",
                 color="Step",
                 category_orders={"Step": step_order},
+                hover_data=[
+                    "Original Samples",
+                    "QC Added Samples",
+                    "Analytical Additional Counts",
+                    "Adjusted Processing Count",
+                    "Final XRF Count",
+                ],
             )
             show_legend_on_right(fig_overall, "Process Step")
             fig_overall.update_yaxes(autorange="reversed")
@@ -1421,7 +1538,12 @@ if st.session_state.batches:
             st.info("No active sample batch to display.")
         else:
             fig_plate = px.timeline(
-                active_red_df, x_start="Reduction Start", x_end="Reduction Finish", y="Plate", color="Batch"
+                active_red_df,
+                x_start="Reduction Start",
+                x_end="Reduction Finish",
+                y="Plate",
+                color="Batch",
+                hover_data=["Original Samples", "QC Added Samples", "Adjusted Processing Count"],
             )
             show_legend_on_right(fig_plate, "Batch")
             fig_plate.update_yaxes(autorange="reversed")
@@ -1439,13 +1561,29 @@ if st.session_state.batches:
                         "Type": r["Type"],
                         "Start": r["Start"],
                         "Finish": r["Finish"],
+                        "Original Samples": r.get("Original Samples"),
+                        "QC Added Samples": r.get("QC Added Samples"),
+                        "Analytical Additional Counts": r.get("Analytical Additional Counts"),
+                        "Adjusted Processing Count": r.get("Adjusted Processing Count"),
                     }
                 )
         dry_plot_df = pd.DataFrame(dry_plot)
         if dry_plot_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_dry = px.timeline(dry_plot_df, x_start="Start", x_end="Finish", y="Slot", color="Batch")
+            fig_dry = px.timeline(
+                dry_plot_df,
+                x_start="Start",
+                x_end="Finish",
+                y="Slot",
+                color="Batch",
+                hover_data=[
+                    "Original Samples",
+                    "QC Added Samples",
+                    "Analytical Additional Counts",
+                    "Adjusted Processing Count",
+                ],
+            )
             show_legend_on_right(fig_dry, "Batch")
             fig_dry.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_dry, use_container_width=True)
@@ -1456,7 +1594,14 @@ if st.session_state.batches:
         if active_crush_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_cr = px.timeline(active_crush_df, x_start="Start", x_end="Finish", y="Lane", color="Batch")
+            fig_cr = px.timeline(
+                active_crush_df,
+                x_start="Start",
+                x_end="Finish",
+                y="Lane",
+                color="Batch",
+                hover_data=["Original Samples", "QC Added Samples", "Adjusted Processing Count"],
+            )
             show_legend_on_right(fig_cr, "Batch")
             fig_cr.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_cr, use_container_width=True)
@@ -1466,7 +1611,14 @@ if st.session_state.batches:
         if active_pulv_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_p = px.timeline(active_pulv_df, x_start="Start", x_end="Finish", y="Machine", color="Batch")
+            fig_p = px.timeline(
+                active_pulv_df,
+                x_start="Start",
+                x_end="Finish",
+                y="Machine",
+                color="Batch",
+                hover_data=["Original Samples", "QC Added Samples", "Adjusted Processing Count"],
+            )
             show_legend_on_right(fig_p, "Batch")
             fig_p.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_p, use_container_width=True)
@@ -1476,7 +1628,19 @@ if st.session_state.batches:
         if active_weighing_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_w = px.timeline(active_weighing_df, x_start="Start", x_end="Finish", y="Balance", color="Batch")
+            fig_w = px.timeline(
+                active_weighing_df,
+                x_start="Start",
+                x_end="Finish",
+                y="Balance",
+                color="Batch",
+                hover_data=[
+                    "Original Samples",
+                    "QC Added Samples",
+                    "Analytical Additional Counts",
+                    "Final XRF Count",
+                ],
+            )
             show_legend_on_right(fig_w, "Batch")
             fig_w.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_w, use_container_width=True)
@@ -1486,7 +1650,19 @@ if st.session_state.batches:
         if active_pellet_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_pel = px.timeline(active_pellet_df, x_start="Start", x_end="Finish", y="Machine", color="Batch")
+            fig_pel = px.timeline(
+                active_pellet_df,
+                x_start="Start",
+                x_end="Finish",
+                y="Machine",
+                color="Batch",
+                hover_data=[
+                    "Original Samples",
+                    "QC Added Samples",
+                    "Analytical Additional Counts",
+                    "Final XRF Count",
+                ],
+            )
             show_legend_on_right(fig_pel, "Batch")
             fig_pel.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_pel, use_container_width=True)
@@ -1496,7 +1672,20 @@ if st.session_state.batches:
         if active_xrf_df.empty:
             st.info("No active sample batch to display.")
         else:
-            fig_xrf = px.timeline(active_xrf_df, x_start="Start", x_end="Finish", y="Machine", color="Batch")
+            fig_xrf = px.timeline(
+                active_xrf_df,
+                x_start="Start",
+                x_end="Finish",
+                y="Machine",
+                color="Batch",
+                hover_data=[
+                    "Samples",
+                    "Original Samples",
+                    "QC Added Samples",
+                    "Analytical Additional Counts",
+                    "Final XRF Count",
+                ],
+            )
             show_legend_on_right(fig_xrf, "Batch")
             fig_xrf.update_yaxes(autorange="reversed")
             st.plotly_chart(fig_xrf, use_container_width=True)
