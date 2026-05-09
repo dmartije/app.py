@@ -638,9 +638,11 @@ if "batches" not in st.session_state:
     st.session_state.batches = load_batches()
 if "schedule_mode" not in st.session_state:
     st.session_state.schedule_mode = "fifo"
+if "new_batch_received_at" not in st.session_state:
+    st.session_state.new_batch_received_at = ph_now.to_pydatetime().replace(second=0, microsecond=0)
 
 st.sidebar.markdown("### Append Batch")
-with st.sidebar.form("add_batch_form", clear_on_submit=True):
+with st.sidebar.form("add_batch_form"):
     new_batch_id = st.text_input("Batch Number / Sample ID", value="")
     new_type = st.selectbox("Sample Type", list(rules.keys()))
     new_material = st.selectbox("Material", ["Limonite", "Saprolite"], index=0)
@@ -651,7 +653,7 @@ with st.sidebar.form("add_batch_form", clear_on_submit=True):
         value=1,
         help="Enter only the actual received samples. QC and analytical additions are calculated automatically.",
     )
-    new_received = st.datetime_input("Date and Time Received", value=ph_now.to_pydatetime())
+    new_received = st.datetime_input("Date and Time Received", key="new_batch_received_at")
     add_clicked = st.form_submit_button("Add Batch")
 
 st.sidebar.markdown("### Shared Capacity Inputs")
