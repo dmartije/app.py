@@ -977,6 +977,14 @@ if st.session_state.batches:
     with batch_list_placeholder.container():
         lab_html_table_card("Batch List Table", batch_list_display_df)
 
+    apply_col, fifo_col, soft_col = st.columns(3)
+    with apply_col:
+        apply_clicked = st.button("Apply Batch Edits/Deletes", use_container_width=True)
+    with fifo_col:
+        fifo_clicked = st.button("FIFO Sublot Priority Solver", use_container_width=True)
+    with soft_col:
+        soft_clicked = st.button("Soft Priority Solver", use_container_width=True)
+
     process_specs_placeholder = st.empty()
     process_specs_editor_df = process_times_df(st.session_state.process_times)
     with st.expander("Edit Process Time Specification Table", expanded=False):
@@ -1003,16 +1011,10 @@ if st.session_state.batches:
         lab_html_table_card(
             "Process Time Specifications",
             display_process_specs_df(edited_process_specs),
-            caption="Edit the hidden table, then click Apply Batch Edits/Deletes to use those minutes in the least-processing-time schedule calculations.",
+            caption="Edit the hidden table, then click Update Process Time Specifications to use those minutes in schedule calculations.",
         )
         
-    apply_col, fifo_col, soft_col = st.columns(3)
-    with apply_col:
-        apply_clicked = st.button("Apply Batch Edits/Deletes", use_container_width=True)
-    with fifo_col:
-        fifo_clicked = st.button("FIFO Sublot Priority Solver", use_container_width=True)
-    with soft_col:
-        soft_clicked = st.button("Soft Priority Solver", use_container_width=True)
+    update_process_specs_clicked = st.button("Update Process Time Specifications", use_container_width=True)
 
     if apply_clicked:
         remove_mask = edited["Remove"].fillna(False).astype(bool)
@@ -1021,8 +1023,10 @@ if st.session_state.batches:
         kept["received_at"] = pd.to_datetime(kept["received_at"])
         kept["_input_order"] = range(len(kept))
         st.session_state.batches = kept.to_dict("records")
-        st.session_state.process_times = normalize_process_times(edited_process_specs.to_dict("records"))
         save_batches(st.session_state.batches)
+        st.rerun()
+    if update_process_specs_clicked:
+        st.session_state.process_times = normalize_process_times(edited_process_specs.to_dict("records"))
         save_process_times(st.session_state.process_times)
         st.rerun()
     if fifo_clicked:
