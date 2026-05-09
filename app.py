@@ -752,6 +752,140 @@ def ovens_available(ts):
     return ovens_high if within_window(ts) else ovens_low
 
 
+def oven_window_boundary_after(ts):
+    """Return the next time oven capacity can change after ``ts``."""
+    if window_start == window_end:
+        return None
+
+    ts = pd.Timestamp(ts)
+    candidates = []
+    for boundary_time in (window_start, window_end):
+        boundary = pd.Timestamp(datetime.combine(ts.date(), boundary_time))
+        if ts.tzinfo is not None:
+            boundary = boundary.tz_localize(ts.tzinfo)
+        if boundary <= ts:
+            boundary += timedelta(days=1)
+        candidates.append(boundary)
+    return min(candidates)
+
+
+def active_oven_slots_at(ts):
+    """Return deterministic shelf slots active at a timestamp based on oven capacity."""
+    active_ovens = int(ovens_available(ts))
+    slots = []
+    for oven_idx in range(1, active_ovens + 1):
+        oven_label = f"Oven {oven_idx}"
+        for shelf in range(1, SHELVES_PER_OVEN + 1):
+            slots.append(f"{oven_label}-Shelf {shelf}")
+    return slots
+
+
+def slot_is_occupied_at(slot, ts, oven_jobs):
+    """Return True when a shelf slot is already occupied at a timestamp."""
+    return any(job["start"] <= ts < job["finish"] and slot in job["slots"] for job in oven_jobs)
+
+
+def next_slot_conflict_after(slot, ts, oven_jobs):
+    """Return the next scheduled start that would interrupt a slot after ``ts``."""
+    starts = [job["start"] for job in oven_jobs if slot in job["slots"] and job["start"] > ts]
+    return min(starts) if starts else None
+
+
+def next_oven_resume_time(ts, oven_jobs):
+    """Jump to the next time when a paused drying job could make progress."""
+    candidates = [ts + timedelta(minutes=TIME_UNIT)]
+    boundary = oven_window_boundary_after(ts)
+    if boundary is not None:
+        candidates.append(boundary)
+    candidates.extend(job["finish"] for job in oven_jobs if job["finish"] > ts)
+    return min(candidate for candidate in candidates if candidate > ts)
+
+
+def best_segment_slots_at(ts, remaining_duration, shelves_need, oven_jobs):
+    """
+    Choose the deterministic active shelf set that can dry the longest from ``ts``.
+
+    Existing oven reservations are fixed, so maximizing the next valid segment length
+    gives the earliest continuation point for a pause/resume drying job. Ties are
+    broken by slot order, which prefers Oven 1 before Oven 2.
+    """
+    free_slots = [
+        slot
+        for slot in active_oven_slots_at(ts)
+        if not slot_is_occupied_at(slot, ts, oven_jobs)
+    ]
+    if len(free_slots) < shelves_need:
+        return None, None
+
+    boundary = oven_window_boundary_after(ts)
+    base_limit = ts + remaining_duration
+    if boundary is not None:
+        base_limit = min(base_limit, boundary)
+
+    best_slots = None
+    best_finish = None
+    for slots in itertools.combinations(free_slots, shelves_need):
+        segment_finish = base_limit
+        for slot in slots:
+            conflict_start = next_slot_conflict_after(slot, ts, oven_jobs)
+            if conflict_start is not None:
+                segment_finish = min(segment_finish, conflict_start)
+        if segment_finish <= ts:
+            continue
+        if best_finish is None or segment_finish > best_finish:
+            best_slots = list(slots)
+            best_finish = segment_finish
+
+    return best_slots, best_finish
+
+
+def find_best_segmented_oven_assignment(earliest_start, duration, shelves_need, oven_jobs, step):
+    """
+    Build the earliest-completing pause/resume drying plan across oven windows.
+
+    A drying job may be split whenever the active oven count changes or a shelf
+    reservation begins. The next segment can resume on any deterministic active
+    oven/shelf set with enough capacity, minimizing the current job completion time
+    while retaining existing shelf-conflict checks.
+    """
+    max_slots = max(int(ovens_high), int(ovens_low)) * SHELVES_PER_OVEN
+    if shelves_need > max_slots:
+        raise RuntimeError(
+            f"Drying requires {shelves_need} shelf slots, but only {max_slots} can ever be active."
+        )
+
+    cursor = pd.Timestamp(earliest_start)
+    remaining = duration
+    segments = []
+    search_deadline = cursor + timedelta(days=14)
+
+    while remaining > timedelta(0):
+        if cursor > search_deadline:
+            raise RuntimeError(
+                "No valid segmented oven assignment found within 14 days. Check oven "
+                "operating windows, active oven counts, shelf capacity, and drying duration."
+            )
+
+        slots, segment_finish = best_segment_slots_at(cursor, remaining, shelves_need, oven_jobs)
+        if not slots:
+            cursor = next_oven_resume_time(cursor, oven_jobs)
+            continue
+
+        segments.append(
+            {
+                "Segment": len(segments) + 1,
+                "Step": step,
+                "Start": cursor,
+                "Finish": segment_finish,
+                "Slots": slots,
+            }
+        )
+        remaining -= segment_finish - cursor
+        cursor = segment_finish
+
+    return segments
+
+
 def schedule_batches(batches):
     """
     Build a full schedule for all batches in sequence.
@@ -802,38 +936,27 @@ def schedule_batches(batches):
         if b["sample_type"] == "Lot Quality":
             pre_start = sorting_end
             pre_duration = timedelta(minutes=240)
-            pre_slots = []
-            while not pre_slots:
-                ovens = ovens_available(pre_start)
-                candidates = [f"Oven {i}" for i in range(1, ovens + 1)]
-                active_slots = []
-                for dj in oven_jobs:
-                    if not (pre_start + pre_duration <= dj["start"] or pre_start >= dj["finish"]):
-                        active_slots.extend(dj["slots"])
-                free_slots = []
-                for o in candidates:
-                    for shelf in range(1, SHELVES_PER_OVEN + 1):
-                        slot = f"{o}-Shelf {shelf}"
-                        if slot not in active_slots:
-                            free_slots.append(slot)
-                pre_slots = free_slots[:1]
-                if not pre_slots:
-                    pre_start += timedelta(minutes=TIME_UNIT)
-            pre_finish = pre_start + pre_duration
-            oven_jobs.append({"start": pre_start, "finish": pre_finish, "slots": pre_slots})
-            drying_rows.append(
-                {
-                    "Batch": bid,
-                    "Type": b["sample_type"],
-                    "Qty": qty,
-                    "Step": "Pre-Drying",
-                    "Start": pre_start,
-                    "Finish": pre_finish,
-                    "Slots": pre_slots,
-                    **step_count_metadata(b["sample_type"], qty, "Pre-Drying"),
-                }
+            pre_segments = find_best_segmented_oven_assignment(
+                pre_start,
+                pre_duration,
+                shelves_need=1,
+                oven_jobs=oven_jobs,
+                step="Pre-Drying",
             )
-            red_start = pre_finish
+            for segment in pre_segments:
+                oven_jobs.append(
+                    {"start": segment["Start"], "finish": segment["Finish"], "slots": segment["Slots"]}
+                )
+                drying_rows.append(
+                    {
+                        "Batch": bid,
+                        "Type": b["sample_type"],
+                        "Qty": qty,
+                        **segment,
+                        **step_count_metadata(b["sample_type"], qty, "Pre-Drying"),
+                    }
+                )
+            red_start = pre_segments[-1]["Finish"]
 
         # Find first time where enough plates are free for reduction.
         while True:
@@ -846,7 +969,7 @@ def schedule_batches(batches):
             if len(free_plates) >= plates_need:
                 break
             red_start += timedelta(minutes=TIME_UNIT)
-
+            
         reduction_per_sample = per_sample_minutes("reduction", b["sample_type"], material)
         used_plates = free_plates[:plates_need]
         # Reduction cycle time is per-sample process time; each plate handles one sample-process in parallel.
@@ -873,47 +996,32 @@ def schedule_batches(batches):
             }
         )
 
-        # Find shelf slots where entire drying duration can fit.
+        # Build pause/resume drying segments across oven-window and shelf-capacity changes.
         dry_start = red_finish
         shelves_need = math.ceil(dry_qty / r["drying_per_shelf"])
         duration = timedelta(minutes=r["drying_minutes"])
-        assigned_slots = []
-
-        while not assigned_slots:
-            ovens = ovens_available(dry_start)
-            candidates = [f"Oven {i}" for i in range(1, ovens + 1)]
-            active_slots = []
-            for dj in oven_jobs:
-                if not (dry_start + duration <= dj["start"] or dry_start >= dj["finish"]):
-                    active_slots.extend(dj["slots"])
-
-            free_slots = []
-            for o in candidates:
-                for shelf in range(1, SHELVES_PER_OVEN + 1):
-                    slot = f"{o}-Shelf {shelf}"
-                    if slot not in active_slots:
-                        free_slots.append(slot)
-
-            assigned_slots = free_slots[:shelves_need]
-            if len(assigned_slots) < shelves_need:
-                assigned_slots = []
-                dry_start += timedelta(minutes=TIME_UNIT)
-
-        dry_finish = dry_start + duration
-        oven_jobs.append({"start": dry_start, "finish": dry_finish, "slots": assigned_slots})
-        drying_rows.append(
-            {
-                "Batch": bid,
-                "Type": b["sample_type"],
-                "Qty": dry_qty,
-                **step_count_metadata(b["sample_type"], qty, "Drying"),
-                "Start": dry_start,
-                "Finish": dry_finish,
-                "Step": "Drying",
-                "Slots": assigned_slots,
-            }
+        dry_segments = find_best_segmented_oven_assignment(
+            dry_start,
+            duration,
+            shelves_need=shelves_need,
+            oven_jobs=oven_jobs,
+            step="Drying",
         )
-
+        for segment in dry_segments:
+            oven_jobs.append(
+                {"start": segment["Start"], "finish": segment["Finish"], "slots": segment["Slots"]}
+            )
+            drying_rows.append(
+                {
+                    "Batch": bid,
+                    "Type": b["sample_type"],
+                    "Qty": dry_qty,
+                    **step_count_metadata(b["sample_type"], qty, "Drying"),
+                    **segment,
+                }
+            )
+        dry_finish = dry_segments[-1]["Finish"]
+        
         # Crushing starts when drying is done and some personnel is available.
         crush_start = dry_finish
         while personnel_total - active_crushing_personnel(crush_start) <= 0:
@@ -1175,15 +1283,8 @@ def schedule_batches(batches):
     return red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df
 
 
-def optimize_batch_order(batches, time_limit_seconds=None):
-    """Return the deterministic FIFO order with Sublot tie-break priority."""
-    if not batches:
-        return batches, "FEASIBLE", "No batches."
-
-    # FIFO baseline by received time.
-    # Tie-break behavior:
-    # - Sublot gets priority when same-ready contention occurs
-    # - Face and Mine preserve first-input order for same timestamp (single-batch progression)
+def fifo_sublot_order(batches):
+    """Build the deterministic FIFO/Sublot baseline used to seed optimization."""
     indexed = list(enumerate(batches))
     ordered_pairs = sorted(
         indexed,
@@ -1193,8 +1294,46 @@ def optimize_batch_order(batches, time_limit_seconds=None):
             pair[0],  # preserve first-input order on ties (especially Face/Mine)
         ),
     )
-    ordered = [b for _, b in ordered_pairs]
-    return ordered, "FEASIBLE", "FIFO Sublot Priority ordering applied."
+   return [b for _, b in ordered_pairs]
+
+
+def optimize_batch_order(batches, time_limit_seconds=None):
+    """Optimize the schedule, seeded by deterministic FIFO/Sublot priority."""
+    if not batches:
+        return batches, "FEASIBLE", "No batches."
+
+    time_limit = solver_time_limit if time_limit_seconds is None else time_limit_seconds
+    deadline = time.monotonic() + max(1, int(time_limit))
+    best_order = fifo_sublot_order(batches)
+    best_score = evaluate_order(best_order)
+    evaluated = 1
+
+    if len(batches) <= 8:
+        for candidate in itertools.permutations(batches):
+            if time.monotonic() >= deadline:
+                return (
+                    best_order,
+                    "TIME_LIMIT",
+                    f"FIFO Sublot Priority solver evaluated {evaluated} order(s) within {time_limit} seconds and returned the fastest valid schedule found.",
+                )
+            candidate_order = list(candidate)
+            candidate_score = evaluate_order(candidate_order)
+            evaluated += 1
+            if candidate_score < best_score:
+                best_order = candidate_order
+                best_score = candidate_score
+        return (
+            best_order,
+            "OPTIMAL",
+            f"FIFO Sublot Priority solver evaluated all {evaluated} order(s) and selected the fastest valid schedule after resource and oven-window constraints.",
+        )
+
+    best_order, best_score = improve_order_with_adjacent_swaps(best_order, deadline)
+    return (
+        best_order,
+        "FEASIBLE",
+        f"FIFO Sublot Priority solver used a time-limited improvement search for {len(batches)} batches and returned the fastest valid schedule found within {time_limit} seconds.",
+    )
 
 
 def evaluate_order(order):
@@ -1244,7 +1383,7 @@ def optimize_soft_priority_order(batches, time_limit_seconds):
         return batches, "FEASIBLE", "No batches."
 
     deadline = time.monotonic() + max(1, int(time_limit_seconds))
-    fifo_order, _, _ = optimize_batch_order(batches)
+    fifo_order = fifo_sublot_order(batches)
     best_order = fifo_order
     best_score = evaluate_order(best_order)
     evaluated = 1
@@ -1438,7 +1577,7 @@ if st.session_state.batches:
         best_order, solver_status, solver_message = optimize_soft_priority_order(st.session_state.batches, solver_time_limit)
         schedule_mode_label = "Soft Priority"
     else:
-        best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches)
+        best_order, solver_status, solver_message = optimize_batch_order(st.session_state.batches, solver_time_limit)
         schedule_mode_label = "FIFO Sublot Priority"
 
     red_df, dry_df, crush_df, pulv_df, overall_df, weighing_df, pellet_df, xrf_df = schedule_batches(best_order)
@@ -1555,7 +1694,7 @@ if st.session_state.batches:
                 "Lot Quality": rules["Lot Quality"]["drying_minutes"],
                 "Processing Basis": "Per Cycle",
                 "Resource Used": "Oven",
-                "Notes": f"Uses adjusted count after QC additions; capacity varies by oven window ({ovens_high}/{ovens_low} ovens).",
+                "Notes": f"Uses adjusted count after QC additions; drying may pause/resume across oven-window capacity ({ovens_high}/{ovens_low} ovens).",
             },
             {
                 "Process Step": "Crushing",
@@ -1734,6 +1873,7 @@ if st.session_state.batches:
                 category_orders={"Step": step_order},
                 color_discrete_map=PROCESS_STEP_COLORS,
                 hover_data=[
+                    "Step",
                     "Original Samples",
                     "QC Added Samples",
                     "Analytical Additional Counts",
@@ -1774,6 +1914,8 @@ if st.session_state.batches:
                         "Slot": slot,
                         "Batch": r["Batch"],
                         "Type": r["Type"],
+                        "Step": r.get("Step"),
+                        "Segment": r.get("Segment"),
                         "Start": r["Start"],
                         "Finish": r["Finish"],
                         "Original Samples": r.get("Original Samples"),
@@ -1794,6 +1936,8 @@ if st.session_state.batches:
                 color="Batch",
                 color_discrete_sequence=BATCH_COLOR_SEQUENCE,                
                 hover_data=[
+                    "Step",
+                    "Segment",
                     "Original Samples",
                     "QC Added Samples",
                     "Analytical Additional Counts",
