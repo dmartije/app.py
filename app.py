@@ -468,6 +468,7 @@ def lab_editor_card(title, dataframe, **editor_kwargs):
 
 # Global scheduling constraints.
 TIME_UNIT = 5
+SORTING_PERSONNEL = 3
 TOTAL_PLATES = 5
 SHELVES_PER_OVEN = 8
 
@@ -636,6 +637,8 @@ solver_time_limit = st.sidebar.slider("Solver Time Limit (seconds)", min_value=3
 # Persist batches and selected schedule mode across Streamlit reruns.
 if "batches" not in st.session_state:
     st.session_state.batches = load_batches()
+for idx, batch in enumerate(st.session_state.batches):
+    batch.setdefault("_input_order", idx)
 if "schedule_mode" not in st.session_state:
     st.session_state.schedule_mode = "fifo"
 if "new_batch_received_at" not in st.session_state:
@@ -657,6 +660,12 @@ with st.sidebar.form("add_batch_form"):
     add_clicked = st.form_submit_button("Add Batch")
 
 st.sidebar.markdown("### Shared Capacity Inputs")
+personnel_total = st.sidebar.number_input(
+    "Personnel Present",
+    min_value=SORTING_PERSONNEL,
+    max_value=100,
+    value=20,
+)
 personnel_total = st.sidebar.number_input("Personnel Present", min_value=1, max_value=100, value=20)
 window_start = st.sidebar.time_input("Higher-capacity window start", value=datetime(2026, 5, 4, 14, 0).time())
 window_end = st.sidebar.time_input("Higher-capacity window end", value=datetime(2026, 5, 5, 6, 0).time())
@@ -674,7 +683,13 @@ if add_clicked and new_batch_id.strip():
             "sample_type": new_type,
             "qty": int(new_qty),
             "material": (new_material if new_type in ["Mine", "Sublot"] else "N/A"),
-            "received_at": pd.Timestamp(new_received),
+            "_input_order": (
+                max(
+                    (int(batch.get("_input_order", idx)) for idx, batch in enumerate(st.session_state.batches)),
+                    default=-1,
+                )
+                + 1
+            ),
         }
     )
     try:
@@ -688,9 +703,10 @@ if st.session_state.batches:
     batch_list_placeholder = st.empty()
 
     edit_df["Remove"] = False
+    batch_editor_columns = ["batch_id", "sample_type", "qty", "material", "received_at", "Remove"]
     with st.expander("Edit Batch List Table", expanded=False):
         edited = st.data_editor(
-            style_lab_table(edit_df),
+            style_lab_table(edit_df[batch_editor_columns]),
             use_container_width=True,
             num_rows="dynamic",
             column_config={
@@ -711,6 +727,10 @@ if st.session_state.batches:
     if "Remove" in batch_list_preview_df.columns:
         remove_preview_mask = batch_list_preview_df["Remove"].fillna(False).astype(bool)
         batch_list_preview_df = batch_list_preview_df[~remove_preview_mask].drop(columns=["Remove"])
+    batch_list_preview_df = batch_list_preview_df.drop(
+        columns=[col for col in batch_list_preview_df.columns if str(col).startswith("_")],
+        errors="ignore",
+    )
     batch_list_preview_df["received_at"] = pd.to_datetime(batch_list_preview_df["received_at"], errors="coerce")
     batch_list_display_df = batch_list_preview_df.rename(
         columns={
@@ -737,6 +757,7 @@ if st.session_state.batches:
         kept = edited[~remove_mask].drop(columns=["Remove"]).copy()
         kept["qty"] = kept["qty"].astype(int)
         kept["received_at"] = pd.to_datetime(kept["received_at"])
+        kept["_input_order"] = range(len(kept))
         st.session_state.batches = kept.to_dict("records")
         save_batches(st.session_state.batches)
         st.rerun()
@@ -929,18 +950,51 @@ def schedule_batches(batches):
     def active_crushing_personnel(ts):
         return sum(j["personnel"] for j in crushing_jobs if j["start"] <= ts < j["finish"])
 
-    # Schedule each batch end-to-end before moving to the next.
-    for b in batches:
+    # Sorting is a single shared station: only one batch can be sorted at a time.
+    # When the station is free, choose the highest-priority received batch; ties within
+    # the same sample type are FIFO by the user's original input order.
+    sorting_queue = []
+    for fallback_order, batch in enumerate(batches):
+        queued_batch = dict(batch)
+        queued_batch.setdefault("_input_order", fallback_order)
+        sorting_queue.append(queued_batch)
+
+    sorting_order = []
+    sorting_cursor = min(pd.Timestamp(batch["received_at"]) for batch in sorting_queue)
+    while sorting_queue:
+        available = [batch for batch in sorting_queue if pd.Timestamp(batch["received_at"]) <= sorting_cursor]
+        if not available:
+            sorting_cursor = min(pd.Timestamp(batch["received_at"]) for batch in sorting_queue)
+            available = [batch for batch in sorting_queue if pd.Timestamp(batch["received_at"]) <= sorting_cursor]
+
+        chosen = min(
+            available,
+            key=lambda batch: (
+                rules[batch["sample_type"]]["priority"],
+                int(batch.get("_input_order", 0)),
+                pd.Timestamp(batch["received_at"]),
+                batch["batch_id"],
+            ),
+        )
+        sorting_start = sorting_cursor
+        sorting_end = sorting_start + timedelta(minutes=rules[chosen["sample_type"]]["sorting_minutes"])
+        chosen["_sorting_start"] = sorting_start
+        chosen["_sorting_end"] = sorting_end
+        sorting_order.append(chosen)
+        sorting_queue.remove(chosen)
+        sorting_cursor = sorting_end
+
+    # Schedule each sorted batch through downstream resources after its sorting slot.
+    for b in sorting_order:
         r = rules[b["sample_type"]]
         bid = b["batch_id"]
         qty = int(b["qty"])
         counts = qc_count_breakdown(b["sample_type"], qty)
         dry_qty = counts["Adjusted After Reduction"]
         material = b.get("material", "N/A")
-        recv = pd.Timestamp(b["received_at"])
 
-        sorting_start = recv
-        sorting_end = recv + timedelta(minutes=r["sorting_minutes"])
+        sorting_start = b["_sorting_start"]
+        sorting_end = b["_sorting_end"]
 
         # Optional pre-drying for Lot Quality before reduction.
         red_start = sorting_end
@@ -999,9 +1053,10 @@ def schedule_batches(batches):
                 **step_count_metadata(b["sample_type"], qty, "Reduction"),
                 "Sorting Start": sorting_start,
                 "Sorting End": sorting_end,
+                "Sorting Personnel": SORTING_PERSONNEL,
                 "Reduction Start": red_start,
                 "Reduction Finish": red_finish,
-                "Personnel": personnel_need,
+                "Reduction Personnel": personnel_need,
                 "Material": material,
                 "Plate": ", ".join(used_plates),
             }
@@ -1685,7 +1740,11 @@ if st.session_state.batches:
                 "Lot Quality": rules["Lot Quality"]["sorting_minutes"],
                 "Processing Basis": "Per Batch",
                 "Resource Used": "Personnel",
-                "Notes": "Fixed per batch by sample type; uses Original Samples only.",
+                "Notes": (
+                    f"Fixed per batch by sample type; one shared sorting station processes 1 batch at a "
+                    f"time with {SORTING_PERSONNEL} personnel. Priority decides among received batches; "
+                    "same-type ties follow input order."
+                ),
             },
             {
                 "Process Step": "Reduction",
