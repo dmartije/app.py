@@ -1294,7 +1294,7 @@ def fifo_sublot_order(batches):
             pair[0],  # preserve first-input order on ties (especially Face/Mine)
         ),
     )
-   return [b for _, b in ordered_pairs]
+    return [b for _, b in ordered_pairs]
 
 
 def optimize_batch_order(batches, time_limit_seconds=None):
