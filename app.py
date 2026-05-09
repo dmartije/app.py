@@ -274,6 +274,7 @@ PH_TZ = ZoneInfo("Asia/Manila")
 ph_now = pd.Timestamp(datetime.now(PH_TZ)).tz_localize(None)
 st.caption(f"Current Philippine Time: {ph_now.strftime('%Y-%m-%d %I:%M:%S %p')}")
 BATCH_STORE = Path("batches_store.json")
+PROCESS_TIME_STORE = Path("process_times_store.json")
 
 
 def load_batches():
@@ -295,6 +296,253 @@ def save_batches(records):
         row["received_at"] = str(pd.Timestamp(row["received_at"]))
         serializable.append(row)
     BATCH_STORE.write_text(json.dumps(serializable, indent=2))
+
+
+
+
+PROCESS_TIME_EDITOR_COLUMNS = [
+    "Process Step",
+    "Face",
+    "Mine Limonite",
+    "Mine Saprolite",
+    "Sublot Limonite",
+    "Sublot Saprolite",
+    "Lot Quality",
+    "Processing Basis",
+    "Resource Used",
+    "Notes",
+]
+
+DEFAULT_PROCESS_TIME_SPECS = [
+    {
+        "Process Step": "Sorting",
+        "Face": 60,
+        "Mine Limonite": 30,
+        "Mine Saprolite": 30,
+        "Sublot Limonite": 35,
+        "Sublot Saprolite": 35,
+        "Lot Quality": 30,
+        "Processing Basis": "Per Batch",
+        "Resource Used": "Personnel",
+        "Notes": "Fixed per batch by sample type; one shared sorting station processes 1 batch at a time. Priority decides among received batches; same-type ties follow input order.",
+    },
+    {
+        "Process Step": "Reduction",
+        "Face": 5,
+        "Mine Limonite": 30,
+        "Mine Saprolite": 45,
+        "Sublot Limonite": 45,
+        "Sublot Saprolite": 60,
+        "Lot Quality": 30,
+        "Processing Basis": "Per Sample",
+        "Resource Used": "Personnel / Plate",
+        "Notes": "Uses Original Samples only; plate count creates parallel sample-processing cycles.",
+    },
+    {
+        "Process Step": "Drying",
+        "Face": 480,
+        "Mine Limonite": 480,
+        "Mine Saprolite": 480,
+        "Sublot Limonite": 480,
+        "Sublot Saprolite": 480,
+        "Lot Quality": 360,
+        "Processing Basis": "Per Cycle",
+        "Resource Used": "Oven",
+        "Notes": "Uses adjusted count after QC additions; drying may pause/resume across oven-window capacity.",
+    },
+    {
+        "Process Step": "Crushing",
+        "Face": 7,
+        "Mine Limonite": 10,
+        "Mine Saprolite": 15,
+        "Sublot Limonite": 15,
+        "Sublot Saprolite": 15,
+        "Lot Quality": 10,
+        "Processing Basis": "Per Sample",
+        "Resource Used": "Personnel",
+        "Notes": "Uses adjusted count after QC additions; parallelized by available personnel.",
+    },
+    {
+        "Process Step": "Pulverizing & Sieving",
+        "Face": 7,
+        "Mine Limonite": 15,
+        "Mine Saprolite": 15,
+        "Sublot Limonite": 30,
+        "Sublot Saprolite": 30,
+        "Lot Quality": 15,
+        "Processing Basis": "Per Sample",
+        "Resource Used": "Pulverizer",
+        "Notes": "Uses adjusted count after QC additions; distributed in parallel across available pulverizers.",
+    },
+    {
+        "Process Step": "Laboratory Sorting",
+        "Face": 10,
+        "Mine Limonite": 10,
+        "Mine Saprolite": 10,
+        "Sublot Limonite": 10,
+        "Sublot Saprolite": 10,
+        "Lot Quality": 10,
+        "Processing Basis": "Per Batch",
+        "Resource Used": "Personnel",
+        "Notes": "Fixed per batch.",
+    },
+    {
+        "Process Step": "Laboratory Drying",
+        "Face": 60,
+        "Mine Limonite": 60,
+        "Mine Saprolite": 60,
+        "Sublot Limonite": 120,
+        "Sublot Saprolite": 120,
+        "Lot Quality": 120,
+        "Processing Basis": "Per Batch",
+        "Resource Used": "Oven",
+        "Notes": "Fixed by sample type.",
+    },
+    {
+        "Process Step": "Cooling in Desiccator",
+        "Face": 45,
+        "Mine Limonite": 45,
+        "Mine Saprolite": 45,
+        "Sublot Limonite": 45,
+        "Sublot Saprolite": 45,
+        "Lot Quality": 45,
+        "Processing Basis": "Per Batch",
+        "Resource Used": "Desiccator",
+        "Notes": "Fixed per batch.",
+    },
+    {
+        "Process Step": "Weighing",
+        "Face": 3,
+        "Mine Limonite": 3,
+        "Mine Saprolite": 3,
+        "Sublot Limonite": 3,
+        "Sublot Saprolite": 3,
+        "Lot Quality": 3,
+        "Processing Basis": "Per Sample",
+        "Resource Used": "Balance",
+        "Notes": "Uses Final XRF Count after QC and analytical additions; two balances in parallel; Sublot prioritized when ready.",
+    },
+    {
+        "Process Step": "Pelletizing",
+        "Face": 3,
+        "Mine Limonite": 3,
+        "Mine Saprolite": 3,
+        "Sublot Limonite": 3,
+        "Sublot Saprolite": 3,
+        "Lot Quality": 3,
+        "Processing Basis": "Per Sample",
+        "Resource Used": "Pelletizer",
+        "Notes": "Uses Final XRF Count after QC and analytical additions; single pelletizer, serialized.",
+    },
+    {
+        "Process Step": "XRF Analysis",
+        "Face": 30,
+        "Mine Limonite": 30,
+        "Mine Saprolite": 30,
+        "Sublot Limonite": 30,
+        "Sublot Saprolite": 30,
+        "Lot Quality": 30,
+        "Processing Basis": "Per 10 Samples",
+        "Resource Used": "XRF Machine",
+        "Notes": "Uses Final XRF Count; minutes are per 10-sample run or partial run; parallel across available XRF machines.",
+    },
+]
+
+
+def default_process_times():
+    """Return a fresh editable process-time specification table."""
+    return [dict(row) for row in DEFAULT_PROCESS_TIME_SPECS]
+
+
+def normalize_process_times(records):
+    """Coerce persisted/editor rows into the expected process-time table shape."""
+    if isinstance(records, pd.DataFrame):
+        records = records.to_dict("records")
+    defaults_by_step = {row["Process Step"]: row for row in DEFAULT_PROCESS_TIME_SPECS}
+    normalized = []
+    seen_steps = set()
+    for raw in records or []:
+        step = str(raw.get("Process Step", "")).strip()
+        if step not in defaults_by_step or step in seen_steps:
+            continue
+        row = dict(defaults_by_step[step])
+        for col in PROCESS_TIME_EDITOR_COLUMNS:
+            if col in raw and pd.notna(raw[col]):
+                row[col] = raw[col]
+        for col in PROCESS_TIME_EDITOR_COLUMNS[1:7]:
+            row[col] = max(0, float(row[col]))
+        normalized.append(row)
+        seen_steps.add(step)
+
+    for default_row in DEFAULT_PROCESS_TIME_SPECS:
+        if default_row["Process Step"] not in seen_steps:
+            normalized.append(dict(default_row))
+    return normalized
+
+
+def load_process_times():
+    if PROCESS_TIME_STORE.exists():
+        try:
+            return normalize_process_times(json.loads(PROCESS_TIME_STORE.read_text()))
+        except Exception:
+            return default_process_times()
+    return default_process_times()
+
+
+def save_process_times(records):
+    PROCESS_TIME_STORE.write_text(json.dumps(normalize_process_times(records), indent=2))
+
+
+def process_times_df(records=None):
+    if records is None:
+        records = st.session_state.get("process_times", default_process_times())
+    return pd.DataFrame(normalize_process_times(records))
+
+
+def process_step_value(step, sample_type, material="N/A"):
+    """Read the currently applied processing-time minutes for a step/sample/material."""
+    specs = process_times_df()
+    matches = specs[specs["Process Step"] == step]
+    if matches.empty:
+        specs = pd.DataFrame(default_process_times())
+        matches = specs[specs["Process Step"] == step]
+    row = matches.iloc[0]
+    sample_type = str(sample_type)
+    material = (material or "").strip().lower()
+    if sample_type == "Face":
+        col = "Face"
+    elif sample_type == "Lot Quality":
+        col = "Lot Quality"
+    elif sample_type == "Mine":
+        col = "Mine Saprolite" if material == "saprolite" else "Mine Limonite"
+    elif sample_type == "Sublot":
+        col = "Sublot Saprolite" if material == "saprolite" else "Sublot Limonite"
+    else:
+        col = "Face"
+    return float(row[col])
+
+
+def display_process_specs_df(records=None):
+    """Collapse material-specific edit columns back into the compact public specifications table."""
+    rows = []
+    if records is None:
+        records = st.session_state.get("process_times", default_process_times())
+    for row in normalize_process_times(records):
+        mine = row["Mine Limonite"] if row["Mine Limonite"] == row["Mine Saprolite"] else f"Limonite {row['Mine Limonite']:g} / Saprolite {row['Mine Saprolite']:g}"
+        sublot = row["Sublot Limonite"] if row["Sublot Limonite"] == row["Sublot Saprolite"] else f"Limonite {row['Sublot Limonite']:g} / Saprolite {row['Sublot Saprolite']:g}"
+        rows.append(
+            {
+                "Process Step": row["Process Step"],
+                "Face": row["Face"],
+                "Mine": mine,
+                "Sublot": sublot,
+                "Lot Quality": row["Lot Quality"],
+                "Processing Basis": row["Processing Basis"],
+                "Resource Used": row["Resource Used"],
+                "Notes": row["Notes"],
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def style_lab_table(df):
@@ -592,32 +840,14 @@ def step_count_metadata(sample_type, original_qty, step):
     }
 
 def per_sample_minutes(step, sample_type, material):
-    material = (material or "").strip().lower()
-    matrix = {
-        "reduction": {
-            "Face": 5,
-            "Mine": {"limonite": 30, "saprolite": 45},
-            "Sublot": {"limonite": 45, "saprolite": 60},
-            "Lot Quality": 30,
-        },
-        "crushing": {
-            "Face": 7,
-            "Mine": {"limonite": 10, "saprolite": 15},
-            "Sublot": {"limonite": 15, "saprolite": 15},
-            "Lot Quality": 10,
-        },
-        "pulverizing": {
-            "Face": 7,
-            "Mine": {"limonite": 15, "saprolite": 15},
-            "Sublot": {"limonite": 30, "saprolite": 30},
-            "Lot Quality": 15,
-        },
-        "weighing": {"Face": 3, "Mine": 3, "Sublot": 3, "Lot Quality": 3},
-    }
-    cfg = matrix[step][sample_type]
-    if isinstance(cfg, dict):
-        return cfg.get(material, next(iter(cfg.values())))
-    return cfg
+    step_name = {
+        "reduction": "Reduction",
+        "crushing": "Crushing",
+        "pulverizing": "Pulverizing & Sieving",
+        "weighing": "Weighing",
+    }[step]
+    return process_step_value(step_name, sample_type, material)
+
 
 
 sidebar_logo_html = ""
@@ -641,6 +871,8 @@ for idx, batch in enumerate(st.session_state.batches):
     batch.setdefault("_input_order", idx)
 if "schedule_mode" not in st.session_state:
     st.session_state.schedule_mode = "fifo"
+if "process_times" not in st.session_state:
+    st.session_state.process_times = load_process_times()
 if "new_batch_received_at" not in st.session_state:
     st.session_state.new_batch_received_at = ph_now.to_pydatetime().replace(second=0, microsecond=0)
 
@@ -683,6 +915,7 @@ if add_clicked and new_batch_id.strip():
             "sample_type": new_type,
             "qty": int(new_qty),
             "material": (new_material if new_type in ["Mine", "Sublot"] else "N/A"),
+            "received_at": pd.Timestamp(new_received),
             "_input_order": (
                 max(
                     (int(batch.get("_input_order", idx)) for idx, batch in enumerate(st.session_state.batches)),
@@ -743,6 +976,35 @@ if st.session_state.batches:
     )
     with batch_list_placeholder.container():
         lab_html_table_card("Batch List Table", batch_list_display_df)
+
+    process_specs_placeholder = st.empty()
+    process_specs_editor_df = process_times_df(st.session_state.process_times)
+    with st.expander("Edit Process Time Specification Table", expanded=False):
+        edited_process_specs = st.data_editor(
+            style_lab_table(process_specs_editor_df[PROCESS_TIME_EDITOR_COLUMNS]),
+            use_container_width=True,
+            hide_index=True,
+            disabled=["Process Step"],
+            column_config={
+                "Process Step": st.column_config.TextColumn("Process Step"),
+                "Face": st.column_config.NumberColumn("Face", min_value=0, step=1),
+                "Mine Limonite": st.column_config.NumberColumn("Mine Limonite", min_value=0, step=1),
+                "Mine Saprolite": st.column_config.NumberColumn("Mine Saprolite", min_value=0, step=1),
+                "Sublot Limonite": st.column_config.NumberColumn("Sublot Limonite", min_value=0, step=1),
+                "Sublot Saprolite": st.column_config.NumberColumn("Sublot Saprolite", min_value=0, step=1),
+                "Lot Quality": st.column_config.NumberColumn("Lot Quality", min_value=0, step=1),
+                "Processing Basis": st.column_config.TextColumn("Processing Basis"),
+                "Resource Used": st.column_config.TextColumn("Resource Used"),
+                "Notes": st.column_config.TextColumn("Notes"),
+            },
+            key="process_time_specs_editor",
+        )
+    with process_specs_placeholder.container():
+        lab_html_table_card(
+            "Process Time Specifications",
+            display_process_specs_df(edited_process_specs),
+            caption="Edit the hidden table, then click Apply Batch Edits/Deletes to use those minutes in the least-processing-time schedule calculations.",
+        )
         
     apply_col, fifo_col, soft_col = st.columns(3)
     with apply_col:
@@ -759,7 +1021,9 @@ if st.session_state.batches:
         kept["received_at"] = pd.to_datetime(kept["received_at"])
         kept["_input_order"] = range(len(kept))
         st.session_state.batches = kept.to_dict("records")
+        st.session_state.process_times = normalize_process_times(edited_process_specs.to_dict("records"))
         save_batches(st.session_state.batches)
+        save_process_times(st.session_state.process_times)
         st.rerun()
     if fifo_clicked:
         st.session_state.schedule_mode = "fifo"
@@ -977,7 +1241,7 @@ def schedule_batches(batches):
             ),
         )
         sorting_start = sorting_cursor
-        sorting_end = sorting_start + timedelta(minutes=rules[chosen["sample_type"]]["sorting_minutes"])
+        sorting_end = sorting_start + timedelta(minutes=process_step_value("Sorting", chosen["sample_type"], chosen.get("material", "N/A")))
         chosen["_sorting_start"] = sorting_start
         chosen["_sorting_end"] = sorting_end
         sorting_order.append(chosen)
@@ -1065,7 +1329,7 @@ def schedule_batches(batches):
         # Build pause/resume drying segments across oven-window and shelf-capacity changes.
         dry_start = red_finish
         shelves_need = math.ceil(dry_qty / r["drying_per_shelf"])
-        duration = timedelta(minutes=r["drying_minutes"])
+        duration = timedelta(minutes=process_step_value("Drying", b["sample_type"], material))
         dry_segments = find_best_segmented_oven_assignment(
             dry_start,
             duration,
@@ -1194,9 +1458,9 @@ def schedule_batches(batches):
             )
 
             lab_sort_start = pulv_finish
-            lab_sort_finish = lab_sort_start + timedelta(minutes=10)
-            lab_dry_finish = lab_sort_finish + timedelta(minutes=rules[rt["Type"]]["lab_drying_minutes"])
-            cool_finish = lab_dry_finish + timedelta(minutes=45)
+            lab_sort_finish = lab_sort_start + timedelta(minutes=process_step_value("Laboratory Sorting", rt["Type"], batch_lookup[bid].get("material", "N/A")))
+            lab_dry_finish = lab_sort_finish + timedelta(minutes=process_step_value("Laboratory Drying", rt["Type"], batch_lookup[bid].get("material", "N/A")))
+            cool_finish = lab_dry_finish + timedelta(minutes=process_step_value("Cooling in Desiccator", rt["Type"], batch_lookup[bid].get("material", "N/A")))
 
             overall_rows.extend(
                 [
@@ -1263,7 +1527,8 @@ def schedule_batches(batches):
     pellet_free = pd.Timestamp.min
     for _, w in weighing_df.iterrows():
         p_start = max(pellet_free, w["Finish"])
-        p_finish = p_start + timedelta(minutes=3)
+        pellet_minutes = process_step_value("Pelletizing", w["Type"], batch_lookup[w["Batch"]].get("material", "N/A"))
+        p_finish = p_start + timedelta(minutes=pellet_minutes)
         pellet_free = p_finish
         pellet_rows.append(
             {
@@ -1313,7 +1578,7 @@ def schedule_batches(batches):
             ready = [t for t in pending_xrf if t["ready"] <= current_t]
         chosen = sorted(ready, key=xrf_task_priority)[0]
         x_start = current_t
-        x_finish = x_start + timedelta(minutes=30)
+        x_finish = x_start + timedelta(minutes=process_step_value("XRF Analysis", chosen["Type"], batch_lookup[chosen["Batch"]].get("material", "N/A")))
         xrf_free[machine] = x_finish
         pending_xrf.remove(chosen)
         xrf_rows.append(
@@ -1729,125 +1994,6 @@ if st.session_state.batches:
         statuses = batch_status_at_time(overall_df, ph_now)
         finals["Status"] = finals["Batch"].map(statuses).fillna("Waiting to Start")
         lab_html_table_card(table_section_title, finals)
-
-        process_specs_title = "Process Time Specifications"
-        spec_rows = [
-            {
-                "Process Step": "Sorting",
-                "Face": rules["Face"]["sorting_minutes"],
-                "Mine": rules["Mine"]["sorting_minutes"],
-                "Sublot": rules["Sublot"]["sorting_minutes"],
-                "Lot Quality": rules["Lot Quality"]["sorting_minutes"],
-                "Processing Basis": "Per Batch",
-                "Resource Used": "Personnel",
-                "Notes": (
-                    f"Fixed per batch by sample type; one shared sorting station processes 1 batch at a "
-                    f"time with {SORTING_PERSONNEL} personnel. Priority decides among received batches; "
-                    "same-type ties follow input order."
-                ),
-            },
-            {
-                "Process Step": "Reduction",
-                "Face": per_sample_minutes("reduction", "Face", "N/A"),
-                "Mine": "Limonite 30 / Saprolite 45",
-                "Sublot": "Limonite 45 / Saprolite 60",
-                "Lot Quality": rules["Lot Quality"]["reduction_minutes"],
-                "Processing Basis": "Per Batch",
-                "Resource Used": "Personnel / Plate",
-                "Notes": f"Uses Original Samples only; personnel headcount constrained by user input ({personnel_total}).",
-            },
-            {
-                "Process Step": "Drying",
-                "Face": rules["Face"]["drying_minutes"],
-                "Mine": rules["Mine"]["drying_minutes"],
-                "Sublot": rules["Sublot"]["drying_minutes"],
-                "Lot Quality": rules["Lot Quality"]["drying_minutes"],
-                "Processing Basis": "Per Cycle",
-                "Resource Used": "Oven",
-                "Notes": f"Uses adjusted count after QC additions; drying may pause/resume across oven-window capacity ({ovens_high}/{ovens_low} ovens).",
-            },
-            {
-                "Process Step": "Crushing",
-                "Face": per_sample_minutes("crushing", "Face", "N/A"),
-                "Mine": "Limonite 10 / Saprolite 15",
-                "Sublot": "Limonite 15 / Saprolite 15",
-                "Lot Quality": rules["Lot Quality"]["crushing_per_sample"],
-                "Processing Basis": "Per Sample",
-                "Resource Used": "Personnel",
-                "Notes": f"Uses adjusted count after QC additions; parallelized by available personnel ({personnel_total} max).",
-            },
-            {
-                "Process Step": "Pulverizing & Sieving",
-                "Face": per_sample_minutes("pulverizing", "Face", "N/A"),
-                "Mine": "Limonite 15 / Saprolite 15",
-                "Sublot": "Limonite 30 / Saprolite 30",
-                "Lot Quality": rules["Lot Quality"]["pulv_per_sample"],
-                "Processing Basis": "Per Sample",
-                "Resource Used": "Pulverizer",
-                "Notes": f"Uses adjusted count after QC additions; distributed in parallel across {pulverizer_count} pulverizer(s).",
-            },
-            {
-                "Process Step": "Laboratory Sorting",
-                "Face": 10,
-                "Mine": 10,
-                "Sublot": 10,
-                "Lot Quality": 10,
-                "Processing Basis": "Per Batch",
-                "Resource Used": "Personnel",
-                "Notes": "Fixed per batch.",
-            },
-            {
-                "Process Step": "Laboratory Drying",
-                "Face": rules["Face"]["lab_drying_minutes"],
-                "Mine": rules["Mine"]["lab_drying_minutes"],
-                "Sublot": rules["Sublot"]["lab_drying_minutes"],
-                "Lot Quality": rules["Lot Quality"]["lab_drying_minutes"],
-                "Processing Basis": "Per Batch",
-                "Resource Used": "Oven",
-                "Notes": "Fixed by sample type.",
-            },
-            {
-                "Process Step": "Cooling in Desiccator",
-                "Face": 45,
-                "Mine": 45,
-                "Sublot": 45,
-                "Lot Quality": 45,
-                "Processing Basis": "Per Batch",
-                "Resource Used": "Desiccator",
-                "Notes": "Fixed per batch.",
-            },
-            {
-                "Process Step": "Weighing",
-                "Face": 3,
-                "Mine": 3,
-                "Sublot": 3,
-                "Lot Quality": 3,
-                "Processing Basis": "Per Sample",
-                "Resource Used": "Balance",
-                "Notes": "Uses Final XRF Count after QC and analytical additions; two balances in parallel; Sublot prioritized when ready.",
-            },
-            {
-                "Process Step": "Pelletizing",
-                "Face": 3,
-                "Mine": 3,
-                "Sublot": 3,
-                "Lot Quality": 3,
-                "Processing Basis": "Per Sample",
-                "Resource Used": "Pelletizer",
-                "Notes": "Uses Final XRF Count after QC and analytical additions; single pelletizer, serialized.",
-            },
-            {
-                "Process Step": "XRF Analysis",
-                "Face": 30,
-                "Mine": 30,
-                "Sublot": 30,
-                "Lot Quality": 30,
-                "Processing Basis": "Per 10 Samples",
-                "Resource Used": "XRF Machine",
-                "Notes": f"Uses Final XRF Count; 30 min per 10-sample run or partial run; parallel across {xrf_machine_count} XRF machine(s).",
-            },
-        ]
-        lab_html_table_card(process_specs_title, pd.DataFrame(spec_rows))
 
         step_summary_title = "Summary per Processing Step (per Batch)"
         step_order = [
