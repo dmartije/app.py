@@ -683,16 +683,7 @@ if add_clicked and new_batch_id.strip():
 
 if st.session_state.batches:
     edit_df = pd.DataFrame(st.session_state.batches)
-    batch_list_display_df = edit_df.rename(
-        columns={
-            "batch_id": "Batch",
-            "sample_type": "Type",
-            "qty": "Original Samples Received",
-            "material": "Material",
-            "received_at": "Date and Time Received",
-        }
-    )
-    lab_html_table_card("Batch List Table", batch_list_display_df)
+    batch_list_placeholder = st.empty()
 
     edit_df["Remove"] = False
     with st.expander("Edit Batch List Table", expanded=False):
@@ -713,6 +704,24 @@ if st.session_state.batches:
                 ),
             },
         )
+
+    batch_list_preview_df = edited.copy()
+    if "Remove" in batch_list_preview_df.columns:
+        remove_preview_mask = batch_list_preview_df["Remove"].fillna(False).astype(bool)
+        batch_list_preview_df = batch_list_preview_df[~remove_preview_mask].drop(columns=["Remove"])
+    batch_list_preview_df["received_at"] = pd.to_datetime(batch_list_preview_df["received_at"], errors="coerce")
+    batch_list_display_df = batch_list_preview_df.rename(
+        columns={
+            "batch_id": "Batch",
+            "sample_type": "Type",
+            "qty": "Original Samples Received",
+            "material": "Material",
+            "received_at": "Date and Time Received",
+        }
+    )
+    with batch_list_placeholder.container():
+        lab_html_table_card("Batch List Table", batch_list_display_df)
+        
     apply_col, fifo_col, soft_col = st.columns(3)
     with apply_col:
         apply_clicked = st.button("Apply Batch Edits/Deletes", use_container_width=True)
